@@ -1,7 +1,9 @@
-# Tauri + React + Typescript
+# VType
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+Voice typing without distractions
 
-## Recommended IDE Setup
+Default hotkey is `Ctrl/Cmd + Alt + r`. This will start recording (should show an icon) and then press it again to stop recording and transcribe
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+Only tested on Linux for now...
+
+Working on adding easier setup and stuff.
