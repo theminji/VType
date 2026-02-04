@@ -1,0 +1,176 @@
+html,
+:root {
+  color-scheme: light;
+  font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+  --bg: rgba(18, 18, 18, 0.92);
+  --muted: rgba(255, 255, 255, 0.55);
+  --accent: #ff8b5c;
+  --error: #ff6b6b;
+  --button-bg: rgba(255, 255, 255, 0.12);
+  --button-border: rgba(255, 255, 255, 0.24);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: transparent;
+  overflow: hidden;
+}
+
+#root {
+  min-height: 100vh;
+  background: transparent;
+  overflow: hidden;
+}
+
+.pill-shell {
+  position: fixed;
+  inset: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: end center;
+  padding: 0 0 12px 0;
+  background: transparent;
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  pointer-events: none;
+  contain: paint;
+  isolation: isolate;
+}
+
+.pill-shell.visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.pill {
+  width: min(160px, 70vw);
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: var(--bg);
+  display: grid;
+  place-items: center;
+  padding: 0 12px;
+  transform: translateZ(0);
+  pointer-events: none;
+}
+
+.pill.confirm {
+  width: min(240px, 86vw);
+  pointer-events: auto;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.confirm {
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 0.7rem;
+  border: 1px solid var(--button-border);
+  background: var(--button-bg);
+  color: white;
+  cursor: pointer;
+}
+
+.confirm.yes {
+  border-color: rgba(255, 139, 92, 0.6);
+  background: rgba(255, 139, 92, 0.2);
+}
+
+.confirm.no {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.wave {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.bar {
+  width: 3px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--muted);
+  opacity: 0.6;
+  transform-origin: center;
+}
+
+.wave.active .bar {
+  background: var(--accent);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.wave.loading .bar {
+  background: var(--accent);
+  border-radius: 999px;
+  animation: loading 0.9s ease-in-out infinite;
+}
+
+.wave.loading .bar:nth-child(2) {
+  animation-delay: 0.1s;
+}
+
+.wave.loading .bar:nth-child(3) {
+  animation-delay: 0.2s;
+}
+
+.wave.loading .bar:nth-child(4) {
+  animation-delay: 0.3s;
+}
+
+.wave.active .bar:nth-child(2) {
+  animation-delay: 0.1s;
+}
+
+.wave.active .bar:nth-child(3) {
+  animation-delay: 0.2s;
+}
+
+.wave.active .bar:nth-child(4) {
+  animation-delay: 0.3s;
+}
+
+.pill-shell.error .bar {
+  background: var(--error);
+}
+
+@keyframes pulse {
+  0% {
+    transform: scaleY(0.6);
+  }
+  50% {
+    transform: scaleY(1.4);
+  }
+  100% {
+    transform: scaleY(0.6);
+  }
+}
+
+@keyframes loading {
+  0% {
+    transform: translateY(0) scaleY(0.8);
+    opacity: 0.5;
+  }
+  40% {
+    transform: translateY(-6px) scaleY(1.2);
+    opacity: 1;
+  }
+  70% {
+    transform: translateY(0) scaleY(0.8);
+    opacity: 0.6;
+  }
+  100% {
+    transform: translateY(0) scaleY(0.8);
+    opacity: 0.5;
+  }
+}
