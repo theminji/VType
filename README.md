@@ -11,6 +11,8 @@ Only tested on Linux for now...
 
 Working on adding easier setup and stuff.
 
-```pip install -r requirements.txt
+```
+pip install -r requirements.txt
 npm install
-npm run tauri dev```
+npm run tauri dev
+```
