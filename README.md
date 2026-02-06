@@ -7,6 +7,10 @@ Default hotkey is `Ctrl/Cmd + Alt + r`. This will start recording (should show a
 
 Only tested on Linux for now...
 
+(Windows has a few glitches I need to iron out)
+
 Working on adding easier setup and stuff.
 
-```npm run tauri dev```
+```pip install -r requirements.txt
+npm install
+npm run tauri dev```
