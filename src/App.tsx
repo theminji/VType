@@ -12,7 +12,7 @@ const TARGET_SAMPLE_RATE = 16000;
 function App() {
   const [status, setStatus] = useState<Status>("idle");
   const [visible, setVisible] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [, setError] = useState<string | null>(null);
 
   const statusRef = useRef<Status>("idle");
   const micStateRef = useRef<MicState>("unknown");

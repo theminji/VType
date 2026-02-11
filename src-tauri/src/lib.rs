@@ -18,9 +18,10 @@ const HOTKEY: &str = "Command+Option+R";
 const HOTKEY: &str = "Ctrl+Alt+R";
 
 #[tauri::command]
-async fn transcribe_wav(wav_base64: String) -> Result<String, String> {
+async fn transcribe_wav(app: tauri::AppHandle, wav_base64: String) -> Result<String, String> {
     let _ = log_message(format!("Transcribe request received, bytes(base64)={}", wav_base64.len()));
     tauri::async_runtime::spawn_blocking(move || {
+        init_script_path(&app)?;
         let wav_bytes = general_purpose::STANDARD
             .decode(wav_base64)
             .map_err(|err| err.to_string())?;
@@ -142,8 +143,9 @@ fn save_wav_temp(wav_base64: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn warm_asr() -> Result<(), String> {
-    std::thread::spawn(|| {
+fn warm_asr(app: tauri::AppHandle) -> Result<(), String> {
+    std::thread::spawn(move || {
+        let _ = init_script_path(&app);
         let _ = ensure_worker();
     });
     Ok(())
@@ -156,6 +158,20 @@ struct AsrWorker {
 }
 
 static ASR_WORKER: OnceLock<Mutex<Option<AsrWorker>>> = OnceLock::new();
+static SCRIPT_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+fn init_script_path(_app: &tauri::AppHandle) -> Result<(), String> {
+    let path = ensure_embedded_script()?;
+    let _ = SCRIPT_PATH.set(path);
+    Ok(())
+}
+
+fn script_path() -> Result<PathBuf, String> {
+    SCRIPT_PATH
+        .get()
+        .cloned()
+        .ok_or_else(|| "transcribe_wav.py not initialized".to_string())
+}
 
 fn worker_state() -> &'static Mutex<Option<AsrWorker>> {
     ASR_WORKER.get_or_init(|| Mutex::new(None))
@@ -187,7 +203,7 @@ where
 }
 
 fn start_worker() -> Result<AsrWorker, String> {
-    let script_path = resolve_script_path().ok_or("transcribe_wav.py not found")?;
+    let script_path = script_path()?;
     let python = resolve_python().ok_or("Python interpreter not found (tried python3, python)")?;
 
     let mut child = Command::new(python)
@@ -195,19 +211,28 @@ fn start_worker() -> Result<AsrWorker, String> {
         .arg("--worker")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| err.to_string())?;
 
     let stdin = child.stdin.take().ok_or("Failed to open ASR stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to open ASR stdout")?;
+    let mut stderr = child.stderr.take();
     let mut reader = BufReader::new(stdout);
     let mut ready = String::new();
     reader
         .read_line(&mut ready)
         .map_err(|err| err.to_string())?;
     if ready.trim() != "ready" {
-        return Err(format!("ASR worker not ready: {}", ready.trim()));
+        let mut err_buf = String::new();
+        if let Some(ref mut err) = stderr {
+            let _ = err.read_to_string(&mut err_buf);
+        }
+        return Err(format!(
+            "ASR worker not ready: {} {}",
+            ready.trim(),
+            err_buf.trim()
+        ));
     }
 
     Ok(AsrWorker {
@@ -249,14 +274,13 @@ fn send_wav(worker: &mut AsrWorker, wav_bytes: &[u8]) -> Result<String, String> 
     Ok(text)
 }
 
-fn resolve_script_path() -> Option<PathBuf> {
-    let current = std::env::current_dir().ok()?;
-    let candidates = [
-        current.join("transcribe_wav.py"),
-        current.join("src-tauri").join("transcribe_wav.py"),
-    ];
-
-    candidates.into_iter().find(|path| path.exists())
+fn ensure_embedded_script() -> Result<PathBuf, String> {
+    let path = std::env::temp_dir().join("vtype_transcribe_wav.py");
+    if !path.exists() {
+        let script = include_str!("../transcribe_wav.py");
+        fs::write(&path, script).map_err(|err| err.to_string())?;
+    }
+    Ok(path)
 }
 
 fn resolve_python() -> Option<&'static str> {
@@ -282,6 +306,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
+            let _ = init_script_path(&app.handle());
             #[cfg(target_os = "linux")]
             {
                 use webkit2gtk::{PermissionRequestExt, SettingsExt, WebViewExt};
