@@ -11,6 +11,10 @@ Only tested on Linux for now...
 
 Working on adding easier setup and stuff.
 
+### UPDATE
+
+Linux binaries in [releases](https://github.com/theminji/VType/releases/tag/releases)
+
 ```
 pip install -r requirements.txt
 npm install
