@@ -2,11 +2,64 @@ import struct
 import sys
 import wave
 from io import BytesIO
+from pathlib import Path
+import os
+import tempfile
+import shutil
 
 import numpy as np
-import onnx_asr
 
 SAMPLE_RATE = 16000
+MODEL_NAME = "nemo-parakeet-tdt-0.6b-v3"
+
+
+def app_base_path() -> Path:
+    local_appdata = os.getenv("LOCALAPPDATA")
+    if local_appdata:
+        return Path(local_appdata) / "vtype"
+    return Path(tempfile.gettempdir()) / "vtype"
+
+
+def configure_hf_cache() -> None:
+    base = app_base_path()
+    hf_home = base / "hf"
+    hf_hub_cache = hf_home / "hub"
+    xdg_cache = base / "xdg-cache"
+
+    hf_home.mkdir(parents=True, exist_ok=True)
+    hf_hub_cache.mkdir(parents=True, exist_ok=True)
+    xdg_cache.mkdir(parents=True, exist_ok=True)
+
+    # Keep caches in a trusted local app directory on Windows.
+    os.environ.setdefault("HF_HOME", str(hf_home))
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(hf_hub_cache))
+    os.environ.setdefault("XDG_CACHE_HOME", str(xdg_cache))
+
+
+configure_hf_cache()
+import onnx_asr
+
+
+def model_path() -> Path:
+    override = os.getenv("VTYPE_MODEL_PATH")
+    if override:
+        return Path(override)
+
+    base = app_base_path() / "models"
+    return base / MODEL_NAME
+
+
+def load_asr_model():
+    path = model_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        return onnx_asr.load_model(MODEL_NAME, path=path)
+    except Exception:
+        # If a partial/corrupt model directory exists, clear and retry once.
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+            return onnx_asr.load_model(MODEL_NAME, path=path)
+        raise
 
 
 def decode_wav_bytes(wav_bytes: bytes) -> np.ndarray:
@@ -20,7 +73,7 @@ def decode_wav_bytes(wav_bytes: bytes) -> np.ndarray:
 
 
 def run_worker() -> int:
-    model = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3")
+    model = load_asr_model()
     sys.stdout.write("ready\n")
     sys.stdout.flush()
 
@@ -64,7 +117,7 @@ def main() -> int:
         print("Missing input wav bytes on stdin", file=sys.stderr)
         return 1
     audio = decode_wav_bytes(wav_bytes)
-    model = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3")
+    model = load_asr_model()
     text = model.recognize(audio, sample_rate=SAMPLE_RATE)
     print(text)
     return 0

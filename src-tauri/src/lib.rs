@@ -1,6 +1,8 @@
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -8,6 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose;
 use base64::Engine as _;
+use tauri::menu::MenuBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, Position};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -16,6 +20,8 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 const HOTKEY: &str = "Command+Option+R";
 #[cfg(not(target_os = "macos"))]
 const HOTKEY: &str = "Ctrl+Alt+R";
+const TRAY_MENU_SHOW: &str = "tray_show";
+const TRAY_MENU_QUIT: &str = "tray_quit";
 
 #[tauri::command]
 async fn transcribe_wav(app: tauri::AppHandle, wav_base64: String) -> Result<String, String> {
@@ -206,14 +212,15 @@ fn start_worker() -> Result<AsrWorker, String> {
     let script_path = script_path()?;
     let python = resolve_python().ok_or("Python interpreter not found (tried python3, python)")?;
 
-    let mut child = Command::new(python)
+    let mut worker_cmd = Command::new(python);
+    worker_cmd
         .arg(script_path)
         .arg("--worker")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| err.to_string())?;
+        .stderr(Stdio::piped());
+    configure_background_command(&mut worker_cmd);
+    let mut child = worker_cmd.spawn().map_err(|err| err.to_string())?;
 
     let stdin = child.stdin.take().ok_or("Failed to open ASR stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to open ASR stdout")?;
@@ -276,27 +283,55 @@ fn send_wav(worker: &mut AsrWorker, wav_bytes: &[u8]) -> Result<String, String> 
 
 fn ensure_embedded_script() -> Result<PathBuf, String> {
     let path = std::env::temp_dir().join("vtype_transcribe_wav.py");
-    if !path.exists() {
-        let script = include_str!("../transcribe_wav.py");
-        fs::write(&path, script).map_err(|err| err.to_string())?;
-    }
+    let script = include_str!("../transcribe_wav.py");
+    fs::write(&path, script).map_err(|err| err.to_string())?;
     Ok(path)
 }
 
 fn resolve_python() -> Option<&'static str> {
     let candidates = ["python3", "python"];
     for candidate in candidates {
-        if Command::new(candidate)
+        let mut version_cmd = Command::new(candidate);
+        version_cmd
             .arg("--version")
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok()
-        {
+            .stderr(Stdio::null());
+        configure_background_command(&mut version_cmd);
+        if version_cmd.status().is_ok() {
             return Some(candidate);
         }
     }
     None
+}
+
+#[cfg(target_os = "windows")]
+fn configure_background_command(command: &mut Command) {
+    // CREATE_NO_WINDOW
+    command.creation_flags(0x08000000);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_background_command(_command: &mut Command) {}
+
+fn show_main_window(app_handle: &tauri::AppHandle) {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = window.set_shadow(false);
+        }
+        if let Ok(monitor) = window.current_monitor() {
+            if let Some(monitor) = monitor {
+                if let Ok(size) = window.outer_size() {
+                    let monitor_size = monitor.size();
+                    let x = (monitor_size.width.saturating_sub(size.width) / 2) as i32;
+                    let y = monitor_size.height.saturating_sub(size.height + 24) as i32;
+                    let _ = window.set_position(Position::Physical((x, y).into()));
+                }
+            }
+        }
+        let _ = window.show();
+        let _ = window.set_focusable(false);
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -328,6 +363,42 @@ pub fn run() {
                     let _ = window.set_focusable(false);
                 }
             }
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    // Prevent the DWM frame/shadow artifact around transparent windows.
+                    let _ = window.set_shadow(false);
+                }
+            }
+            let tray_menu = MenuBuilder::new(app)
+                .text(TRAY_MENU_SHOW, "Show VType")
+                .separator()
+                .text(TRAY_MENU_QUIT, "Quit")
+                .build()?;
+
+            let mut tray_builder = TrayIconBuilder::with_id("main-tray")
+                .menu(&tray_menu)
+                .tooltip("VType")
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    TRAY_MENU_SHOW => show_main_window(app),
+                    TRAY_MENU_QUIT => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                });
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray_builder = tray_builder.icon(icon);
+            }
+            let _ = tray_builder.build(app)?;
 
             let handle = app.handle();
             handle
@@ -338,26 +409,7 @@ pub fn run() {
                     }
                     let app_handle = app.clone();
                     let _ = app.run_on_main_thread(move || {
-                        if let Some(window) = app_handle.get_webview_window("main") {
-                            if let Ok(monitor) = window.current_monitor() {
-                                if let Some(monitor) = monitor {
-                                    if let Ok(size) = window.outer_size() {
-                                        let monitor_size = monitor.size();
-                                        let x =
-                                            (monitor_size.width.saturating_sub(size.width) / 2)
-                                                as i32;
-                                        let y = monitor_size
-                                            .height
-                                            .saturating_sub(size.height + 24)
-                                            as i32;
-                                        let _ =
-                                            window.set_position(Position::Physical((x, y).into()));
-                                    }
-                                }
-                            }
-                            let _ = window.show();
-                            let _ = window.set_focusable(false);
-                        }
+                        show_main_window(&app_handle);
                         let _ = app_handle.emit("hotkey-pressed", ());
                     });
                 })?;

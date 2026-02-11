@@ -2,6 +2,7 @@ html,
 :root {
   color-scheme: light;
   font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+  background: transparent;
   --bg: rgba(18, 18, 18, 0.92);
   --muted: rgba(255, 255, 255, 0.55);
   --accent: #ff8b5c;
