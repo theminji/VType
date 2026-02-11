@@ -7,13 +7,11 @@ Default hotkey is `Ctrl/Cmd + Alt + r`. This will start recording (should show a
 
 Only tested on Linux and Windows for now...
 
-(Windows has a few glitches I need to iron out)
-
-Working on adding easier setup and stuff.
-
 ### UPDATE
 
-Linux binaries in [releases](https://github.com/theminji/VType/releases/tag/releases)
+Linux and Windows binaries in [releases](https://github.com/theminji/VType/releases/tag/releases)
+
+The first time you run the app with the hotkey, it will take a little bit to download the [model](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx)
 
 ```
 pip install -r requirements.txt
