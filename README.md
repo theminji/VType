@@ -1,4 +1,7 @@
 # VType
+
+<img width="128" height="128" alt="128x128" src="https://github.com/user-attachments/assets/f00ea938-4153-499e-8318-f887556607e9" />
+
 ## WORK IN PROGRESS
 
 Voice typing without distractions
