@@ -104,6 +104,7 @@ Choose **Install models** in the setup window. VType installs its Python
 environment and both models before enabling dictation. Setup needs internet
 access, and later dictation runs locally. The native package contains the
 bootstrapper, and setup downloads the model files into your user account.
+Run `vtype --setup` to reopen the setup window after completion.
 
 Native uninstall removes the application and retains preferences and downloaded
 models. To remove those too, quit VType and delete its `com.maria.vtype`

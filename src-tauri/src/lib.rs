@@ -364,6 +364,13 @@ fn trigger_hotkey(app: &tauri::AppHandle) {
     let target = Option::<()>::None;
     let app_handle = app.clone();
     let _ = app.run_on_main_thread(move || {
+        if let Some(window) = app_handle.get_webview_window("onboarding") {
+            if window.is_visible().unwrap_or(false) {
+                let _ = window.set_focus();
+                let _ = window.emit("onboarding-shortcut", ());
+                return;
+            }
+        }
         if onboarding::needed(&app_handle) {
             let _ = onboarding::show(&app_handle);
             return;
@@ -427,10 +434,11 @@ struct OverlayMode {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            let show_setup = args.iter().any(|arg| arg == "--setup");
             let app_handle = app.clone();
             let _ = app.run_on_main_thread(move || {
-                if onboarding::needed(&app_handle) {
+                if show_setup || onboarding::needed(&app_handle) {
                     let _ = onboarding::show(&app_handle);
                 } else {
                     let _ = app_handle.emit("open-settings", ());
@@ -520,6 +528,9 @@ pub fn run() {
 
             settings::setup(app.handle())?;
             onboarding::initialize(app.handle())?;
+            if std::env::args().any(|arg| arg == "--setup") && !onboarding::needed(app.handle()) {
+                onboarding::show(app.handle())?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
