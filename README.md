@@ -8,9 +8,9 @@ Voice typing without distractions
 
 Default hotkey is `Ctrl/Cmd + Alt + r`. This will start recording (should show an icon) and then press it again to stop recording and transcribe
 
-Only tested on Linux and Windows for now...
+Only tested on Linux  for now...
 
-Linux and Windows binaries in [releases](https://github.com/theminji/VType/releases)
+Install binaries in [releases](https://github.com/theminji/VType/releases)
 
 VType runs both models locally. The setup window for installed copies installs
 [Phonon-2.5](https://huggingface.co/FermionResearch/Phonon-2.5) (about 156 MB)
