@@ -1,4 +1,4 @@
-export const LIGHT_WIDTH = 62;
+export const LIGHT_WIDTH = 58;
 export const LIGHT_HEIGHT = 32;
 
 const TURN = 2 * Math.PI;
@@ -10,7 +10,11 @@ const CONTOURS = [
   { phase: 4.5, rate: 1.19, offset: -1.4, tilt: 0.07, width: 0.62, opacity: 0.34 },
 ];
 
-export function startListeningLight(canvas: HTMLCanvasElement, analyser: AnalyserNode) {
+export function startListeningLight(
+  canvas: HTMLCanvasElement,
+  getState: () => string,
+  getAnalyser: () => AnalyserNode | undefined,
+) {
   const canvasContext = canvas.getContext("2d");
   if (!canvasContext) return () => {};
   const context = canvasContext;
@@ -22,24 +26,36 @@ export function startListeningLight(canvas: HTMLCanvasElement, analyser: Analyse
   context.lineJoin = "round";
 
   const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
-  const signal = new Float32Array(analyser.fftSize);
+  let signal = new Float32Array(0);
   let frame = 0;
   let lastFrame: number | undefined;
   let time = 0;
   let level = 0;
+  let speed = 0.7;
+
+  function readVoice() {
+    const analyser = getAnalyser();
+    if (!analyser) return 0;
+    if (signal.length !== analyser.fftSize) signal = new Float32Array(analyser.fftSize);
+    analyser.getFloatTimeDomainData(signal);
+    let energy = 0;
+    for (const sample of signal) energy += sample * sample;
+    const decibels = 10 * Math.log10(energy / signal.length);
+    // Display quiet speech without changing the signal sent to transcription.
+    return Math.min(1, Math.max(0, (decibels + 66) / 43));
+  }
 
   function tick(now: number) {
     const dt = Math.min((now - (lastFrame ?? now)) / 1000, 0.05);
     lastFrame = now;
-    analyser.getFloatTimeDomainData(signal);
-
-    let energy = 0;
-    for (const sample of signal) energy += sample * sample;
-    const rms = Math.sqrt(energy / signal.length);
-    const target = Math.min(1, Math.max(0, rms - 0.004) * 8);
-    const response = target > level ? 0.045 : 0.24;
+    const state = getState();
+    const working = state === "processing" || state === "cleanup" || state === "inserting";
+    const target = state === "recording" ? readVoice() : working ? 0.29 : 0.1;
+    const response = target > level ? 0.034 : 0.23;
     level += (target - level) * (1 - Math.exp(-dt / response));
-    time += dt * (0.8 + 0.6 * level);
+    const targetSpeed = working ? 1.25 : 0.63 + 0.85 * level;
+    speed += (targetSpeed - speed) * (1 - Math.exp(-dt / 0.14));
+    time += dt * speed;
     paintLight(context, time, level);
     frame = window.requestAnimationFrame(tick);
   }
@@ -84,8 +100,8 @@ function paintLight(context: CanvasRenderingContext2D, time: number, level: numb
         + 0.43 * Math.cos(5 * angle + time * 0.68 - phase * 0.4);
       const ripple = Math.sin(2 * angle + drift * 0.86 + phase);
       const fine = Math.sin(4 * angle - drift * 1.16 + phase * 1.7);
-      const x = (19 + swell * (2.1 * surface + 1.3 * ripple)) * Math.cos(angle);
-      const y = (7.2 + swell * (0.9 * surface + 0.8 * ripple)) * Math.sin(angle)
+      const x = (16.5 + swell * (2.3 * surface + 1.3 * ripple)) * Math.cos(angle);
+      const y = (10.3 + swell * (1.3 * surface + 0.95 * ripple)) * Math.sin(angle)
         + swell * fine * 0.8;
       const px = centerX + x + offset * separation + centerShift;
       const py = centerY + y + x * tilt + Math.sin(drift * 0.7 + phase) * separation;

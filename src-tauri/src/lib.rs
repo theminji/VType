@@ -15,7 +15,6 @@ use base64::Engine as _;
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, Position};
-use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 #[cfg(target_os = "macos")]
@@ -56,87 +55,59 @@ async fn cleanup_transcription(text: String) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-async fn paste_transcription(app: tauri::AppHandle, text: String) -> Result<(), String> {
-    app.clipboard()
-        .write_text(text)
-        .map_err(|err| err.to_string())?;
-
-    tauri::async_runtime::spawn_blocking(paste_into_active_app)
-        .await
-        .map_err(|err| err.to_string())?
+async fn insert_transcription(text: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Typing a line break or tab can submit a command or move focus.
+        let text: String = text
+            .chars()
+            .filter_map(|character| {
+                if character.is_control() {
+                    return character.is_whitespace().then_some(' ');
+                }
+                Some(character)
+            })
+            .collect();
+        type_text(&text)
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
-fn paste_into_active_app() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        use enigo::{Key, KeyboardControllable};
-        paste_with_retry(|| {
-            let mut enigo = enigo::Enigo::new();
-            enigo.key_down(Key::Meta);
-            enigo.key_click(Key::Layout('v'));
-            enigo.key_up(Key::Meta);
-            Ok(())
-        })?;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        use enigo::{Key, KeyboardControllable};
-        paste_with_retry(|| {
-            let mut enigo = enigo::Enigo::new();
-            enigo.key_down(Key::Control);
-            enigo.key_click(Key::Layout('v'));
-            enigo.key_up(Key::Control);
-            Ok(())
-        })?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        paste_with_retry(|| linux_paste().map_err(|err| err.to_string()))?;
-    }
-
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn type_text(text: &str) -> Result<(), String> {
+    use enigo::{Enigo, KeyboardControllable};
+    Enigo::new().key_sequence(text);
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn linux_paste() -> Result<(), String> {
-    if hyprland::active() {
-        return hyprland::paste();
-    }
-    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        // Wayland: use wtype if available.
-        let status = Command::new("wtype")
-            .args(["-M", "ctrl", "-k", "v", "-m", "ctrl"])
-            .status()
-            .map_err(|err| err.to_string())?;
-        if status.success() {
-            return Ok(());
-        }
-        return Err("wtype failed to paste on Wayland".to_string());
-    }
-
-    // X11: use xdotool if available.
-    let status = Command::new("xdotool")
-        .args(["key", "--clearmodifiers", "ctrl+v"])
-        .status()
-        .map_err(|err| err.to_string())?;
-    if status.success() {
-        Ok(())
+fn type_text(text: &str) -> Result<(), String> {
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let program = if wayland { "wtype" } else { "xdotool" };
+    let mut command = Command::new(program);
+    if wayland {
+        command.args(["-d", "2", "-"]);
     } else {
-        Err("xdotool failed to paste on X11".to_string())
+        command.args(["type", "--clearmodifiers", "--file", "-"]);
     }
-}
-
-fn paste_with_retry<F>(mut paste_fn: F) -> Result<(), String>
-where
-    F: FnMut() -> Result<(), String>,
-{
-    if let Err(first_err) = paste_fn() {
-        std::thread::sleep(std::time::Duration::from_millis(220));
-        if let Err(second_err) = paste_fn() {
-            return Err(format!("paste failed: {} | {}", first_err, second_err));
-        }
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("Could not run {program}: {err}"))?;
+    let write_result = child
+        .stdin
+        .take()
+        .expect("typing process has piped stdin")
+        .write_all(text.as_bytes());
+    let output = child.wait_with_output().map_err(|err| err.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "{program} could not type: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
-    Ok(())
+    write_result.map_err(|err| format!("Could not send text to {program}: {err}"))
 }
 
 #[tauri::command]
@@ -376,7 +347,6 @@ fn show_main_window(app_handle: &tauri::AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             #[cfg(target_os = "linux")]
@@ -459,7 +429,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             transcribe_wav,
             cleanup_transcription,
-            paste_transcription,
+            insert_transcription,
             log_message,
             save_wav_temp,
             warm_asr,

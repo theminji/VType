@@ -15,9 +15,9 @@ Linux and Windows binaries in [releases](https://github.com/theminji/VType/relea
 VType runs both models locally. On the first dictation it downloads
 [Phonon-2.5](https://huggingface.co/FermionResearch/Phonon-2.5) (about 156 MB)
 for speech recognition and [Spokenly Cleanup 1](https://huggingface.co/spokenly/cleanup-1)
-(about 1.19 GB) to remove fillers and repetitions before pasting. Later dictations
+(about 1.19 GB) to remove fillers and repetitions before typing. Later dictations
 reuse the cached models. If cleanup fails or exceeds its context budget, VType
-pastes the raw transcript.
+types the raw transcript.
 
 Phonon recognizes 25 languages. Cleanup is trained for English, German, Spanish,
 French, Chinese, Russian, and Japanese, with the strongest results in English.
@@ -40,9 +40,15 @@ For other Linux build dependencies and platforms, see the
 VType looks for a project `.venv` when launched from the repository. You can set
 `VTYPE_PYTHON` to select a different Python executable.
 
-On Hyprland 0.55 and newer, VType registers Ctrl+Alt+R through Hyprland and
-uses its paste dispatcher. Restart VType after reloading your Hyprland config
-to restore the shortcut and overlay rule.
+On Hyprland 0.55 and newer, VType registers Ctrl+Alt+R through Hyprland.
+Restart VType after reloading your Hyprland config to restore the shortcut
+and overlay rule.
+
+Direct typing on Linux requires `wtype` on Hyprland and other Wayland
+compositors that support the virtual-keyboard protocol, or `xdotool` on X11.
+On Ubuntu or Pop!_OS, install the relevant package with `sudo apt install wtype`
+or `sudo apt install xdotool`. VType types line breaks and tabs as spaces
+to avoid submitting text or changing focus.
 
 ```sh
 python -m venv .venv

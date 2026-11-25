@@ -12,8 +12,9 @@ const LABELS = {
   recording: "Listening",
   processing: "Transcribing",
   cleanup: "Cleaning up text",
-  done: "Pasted",
-  raw: "Pasted raw transcript",
+  inserting: "Inserting text",
+  done: "Inserted",
+  raw: "Inserted raw transcript",
   empty: "No speech heard",
   error: "",
 };
@@ -32,6 +33,7 @@ function App() {
     let lastHotkey = -Infinity;
     let stream: MediaStream | undefined;
     let context: AudioContext | undefined;
+    let analyser: AnalyserNode | undefined;
     let stopListeningLight: (() => void) | undefined;
     let dismissal = 0;
     let hide = 0;
@@ -42,7 +44,12 @@ function App() {
       window.clearTimeout(hide);
       current.current = next;
       setStatus(next);
+      if (next !== "idle" && !stopListeningLight && listeningLight.current) {
+        stopListeningLight = startListeningLight(listeningLight.current, () => current.current, () => analyser);
+      }
       if (next === "idle") {
+        stopListeningLight?.();
+        stopListeningLight = undefined;
         hide = window.setTimeout(() => {
           void invoke("hide_overlay").catch(console.warn);
         }, 270);
@@ -54,8 +61,7 @@ function App() {
     }
 
     async function releaseAudio() {
-      stopListeningLight?.();
-      stopListeningLight = undefined;
+      analyser = undefined;
       stream?.getTracks().forEach((track) => track.stop());
       stream = undefined;
       const activeContext = context;
@@ -106,7 +112,8 @@ function App() {
       if (disposed) return;
 
       const source = audio.createMediaStreamSource(mic);
-      const analyser = audio.createAnalyser();
+      analyser = audio.createAnalyser();
+      analyser.fftSize = 512;
       const capture = new AudioWorkletNode(audio, "pcm-capture", {
         channelCount: 1,
         channelCountMode: "explicit",
@@ -120,9 +127,6 @@ function App() {
       capture.connect(mute);
       mute.connect(audio.destination);
 
-      if (listeningLight.current) {
-        stopListeningLight = startListeningLight(listeningLight.current, analyser);
-      }
       update("recording");
     }
 
@@ -166,11 +170,12 @@ function App() {
         void invoke("log_message", { message: `Cleanup failed: ${String(err)}` }).catch(console.warn);
       }
 
+      update("inserting");
       try {
-        await invoke("paste_transcription", { text });
+        await invoke("insert_transcription", { text });
         update(finalStatus);
       } catch (err) {
-        report("Auto-paste failed", err);
+        report("Text insertion failed", err);
       }
     }
 
@@ -209,6 +214,7 @@ function App() {
       void unlistenShow.then((stop) => stop()).catch(console.warn);
       window.clearTimeout(dismissal);
       window.clearTimeout(hide);
+      stopListeningLight?.();
       void releaseAudio().catch(console.warn);
     };
   }, []);
@@ -223,10 +229,7 @@ function App() {
           height={LIGHT_HEIGHT}
           aria-hidden="true"
         />
-        <span className="meter" aria-hidden="true">
-          <i /><i /><i /><i /><i />
-        </span>
-        <span className="label" key={status}>{status === "error" ? error : LABELS[status]}</span>
+        <span className="sr-only">{status === "error" ? error : LABELS[status]}</span>
       </div>
     </main>
   );

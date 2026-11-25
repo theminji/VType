@@ -91,10 +91,3 @@ pub fn cleanup() {
         }
     }
 }
-
-pub fn paste() -> Result<(), String> {
-    lua(
-        "dispatch",
-        r#"hl.dsp.send_shortcut({mods = "CTRL", key = "V"})"#,
-    )
-}
