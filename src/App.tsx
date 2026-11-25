@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
+import { defaultSettings, type Settings } from "./settings";
 import { LIGHT_HEIGHT, LIGHT_WIDTH, startListeningLight } from "./listeningLight";
 
 const TARGET_SAMPLE_RATE = 16000;
 const LABELS = {
   idle: "",
-  ready: `${navigator.platform.startsWith("Mac") ? "⌘ + ⌥" : "Ctrl + Alt"} + R to dictate`,
+  ready: "Ready to dictate. Double-click to open settings.",
   starting: "Opening microphone",
   recording: "Listening",
   processing: "Transcribing",
@@ -25,12 +26,15 @@ function App() {
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState("");
   const current = useRef<Status>("idle");
+  const preferences = useRef(defaultSettings);
+  const openPanel = useRef<() => void>(() => {});
   const listeningLight = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     let disposed = false;
     let warmed = false;
     let lastHotkey = -Infinity;
+    let captureAttempt = 0;
     let stream: MediaStream | undefined;
     let context: AudioContext | undefined;
     let analyser: AnalyserNode | undefined;
@@ -45,7 +49,8 @@ function App() {
       current.current = next;
       setStatus(next);
       if (next !== "idle" && !stopListeningLight && listeningLight.current) {
-        stopListeningLight = startListeningLight(listeningLight.current, () => current.current, () => analyser);
+        stopListeningLight = startListeningLight(listeningLight.current, () => current.current, () => analyser,
+          () => preferences.current.meterSensitivity / 100);
       }
       if (next === "idle") {
         stopListeningLight?.();
@@ -77,7 +82,8 @@ function App() {
       void invoke("log_message", { message: String(detail) }).catch(console.warn);
     }
 
-    async function startRecording() {
+    async function startRecording(attempt: number) {
+      const cancelled = () => disposed || attempt !== captureAttempt;
       update("starting");
       if (!warmed) {
         warmed = true;
@@ -88,7 +94,7 @@ function App() {
       }
 
       const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
-      if (disposed) {
+      if (cancelled()) {
         mic.getTracks().forEach((track) => track.stop());
         return;
       }
@@ -107,9 +113,9 @@ function App() {
       } finally {
         URL.revokeObjectURL(workletUrl);
       }
-      if (disposed) return;
+      if (cancelled()) return;
       await audio.resume();
-      if (disposed) return;
+      if (cancelled()) return;
 
       const source = audio.createMediaStreamSource(mic);
       analyser = audio.createAnalyser();
@@ -120,7 +126,9 @@ function App() {
       });
       const mute = audio.createGain();
       mute.gain.value = 0;
-      capture.port.onmessage = (event: MessageEvent<Float32Array>) => chunks.push(event.data);
+      capture.port.onmessage = (event: MessageEvent<Float32Array>) => {
+        if (!cancelled()) chunks.push(event.data);
+      };
 
       source.connect(analyser);
       analyser.connect(capture);
@@ -156,28 +164,49 @@ function App() {
         return;
       }
 
-      update("cleanup");
       let finalStatus: Status = "done";
-      try {
-        const cleaned = await invoke<string | null>("cleanup_transcription", { text });
-        if (cleaned === null) {
+      if (preferences.current.formatter) {
+        update("cleanup");
+        try {
+          const cleaned = await invoke<string | null>("cleanup_transcription", { text });
+          if (cleaned === null) {
+            finalStatus = "raw";
+          } else {
+            text = cleaned;
+          }
+        } catch (err) {
           finalStatus = "raw";
-        } else {
-          text = cleaned;
+          void invoke("log_message", { message: `Cleanup failed: ${String(err)}` }).catch(console.warn);
         }
-      } catch (err) {
-        finalStatus = "raw";
-        void invoke("log_message", { message: `Cleanup failed: ${String(err)}` }).catch(console.warn);
       }
 
       update("inserting");
       try {
         await invoke("insert_transcription", { text });
-        update(finalStatus);
+        update(preferences.current.showCompletion ? finalStatus : "idle");
       } catch (err) {
         report("Text insertion failed", err);
       }
     }
+
+    async function showSettings() {
+      if (current.current === "processing" || current.current === "cleanup" ||
+          current.current === "inserting") return;
+      captureAttempt++;
+      update("idle");
+      await releaseAudio();
+      chunks = [];
+      await invoke("open_settings");
+    }
+    openPanel.current = () => void showSettings().catch(console.warn);
+
+    const unlistenSettings = listen<Settings>("settings-changed", ({ payload }) => {
+      preferences.current = payload;
+    });
+    void invoke<Settings>("get_settings").then((value) => {
+      if (!disposed) preferences.current = value;
+    }).catch(console.warn);
+    const unlistenOpen = listen("open-settings", () => openPanel.current());
 
     const unlisten = listen("hotkey-pressed", () => {
       const now = performance.now();
@@ -190,12 +219,15 @@ function App() {
         case "done":
         case "raw":
         case "empty":
-        case "error":
-          void startRecording().catch((err) => {
+        case "error": {
+          const attempt = ++captureAttempt;
+          void startRecording(attempt).catch((err) => {
+            if (disposed || attempt !== captureAttempt) return;
             void releaseAudio().catch(console.warn);
-            if (!disposed) report("Microphone unavailable", err);
+            report("Microphone unavailable", err);
           });
           break;
+        }
         case "recording":
           void stopRecording().catch((err) => report("Recording failed", err));
           break;
@@ -211,6 +243,8 @@ function App() {
     return () => {
       disposed = true;
       void unlisten.then((stop) => stop()).catch(console.warn);
+      void unlistenSettings.then((stop) => stop()).catch(console.warn);
+      void unlistenOpen.then((stop) => stop()).catch(console.warn);
       void unlistenShow.then((stop) => stop()).catch(console.warn);
       window.clearTimeout(dismissal);
       window.clearTimeout(hide);
@@ -221,7 +255,7 @@ function App() {
 
   return (
     <main className="overlay" role="status" aria-live="polite" aria-atomic="true">
-      <div className="pill" data-status={status}>
+      <div className="pill" data-status={status} onDoubleClick={() => openPanel.current()} title="Double-click for settings">
         <canvas
           className="listening-light"
           ref={listeningLight}

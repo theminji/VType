@@ -14,7 +14,7 @@
       {
         "label": "main",
         "title": "VType Dictation",
-        "width": 230,
+        "width": 112,
         "height": 80,
         "resizable": false,
         "decorations": false,
@@ -24,7 +24,19 @@
         "visible": false,
         "focus": false,
         "focusable": false,
-        "center": false
+        "center": false,
+        "acceptFirstMouse": true
+      },
+      {
+        "label": "settings",
+        "title": "VType Settings",
+        "width": 510,
+        "height": 650,
+        "minWidth": 370,
+        "minHeight": 430,
+        "visible": false,
+        "focus": false,
+        "center": true
       }
     ],
     "security": {
@@ -33,7 +45,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "rpm"],
+    "targets": ["deb", "rpm", "nsis", "dmg"],
+    "category": "Utility",
+    "shortDescription": "On-device voice typing",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -1,5 +1,7 @@
 #[cfg(target_os = "linux")]
 mod hyprland;
+mod runtime;
+mod settings;
 
 use std::fs;
 use std::fs::OpenOptions;
@@ -15,17 +17,17 @@ use base64::Engine as _;
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, Position};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 #[cfg(target_os = "macos")]
-const HOTKEY: &str = "Command+Option+R";
+const HOTKEY: &str = "Alt+Super+R";
 #[cfg(not(target_os = "macos"))]
 const HOTKEY: &str = "Ctrl+Alt+R";
 const TRAY_MENU_SHOW: &str = "tray_show";
+const TRAY_MENU_SETTINGS: &str = "tray_settings";
 const TRAY_MENU_QUIT: &str = "tray_quit";
 
 #[tauri::command]
-async fn transcribe_wav(wav_base64: String) -> Result<String, String> {
+async fn transcribe_wav(app: tauri::AppHandle, wav_base64: String) -> Result<String, String> {
     let _ = log_message(format!(
         "Transcribe request received, bytes(base64)={}",
         wav_base64.len()
@@ -35,7 +37,13 @@ async fn transcribe_wav(wav_base64: String) -> Result<String, String> {
             .decode(wav_base64)
             .map_err(|err| err.to_string())?;
 
-        let response = with_worker(|worker| send_request(worker, b'T', &wav_bytes))?;
+        let hotwords = settings::snapshot(&app)?.hotwords;
+        let terms = serde_json::to_vec(&hotwords).map_err(|err| err.to_string())?;
+        let mut payload = Vec::with_capacity(4 + terms.len() + wav_bytes.len());
+        payload.extend_from_slice(&(terms.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&terms);
+        payload.extend_from_slice(&wav_bytes);
+        let response = with_worker(&app, |worker| send_request(worker, b'T', &payload))?;
         let text = response.trim().to_string();
         let _ = log_message(format!("Transcribe success, chars={}", text.len()));
         Ok(text)
@@ -45,9 +53,12 @@ async fn transcribe_wav(wav_base64: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn cleanup_transcription(text: String) -> Result<Option<String>, String> {
+async fn cleanup_transcription(
+    app: tauri::AppHandle,
+    text: String,
+) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let cleaned = with_worker(|worker| send_request(worker, b'C', text.as_bytes()))?;
+        let cleaned = with_worker(&app, |worker| send_request(worker, b'C', text.as_bytes()))?;
         Ok((!cleaned.is_empty()).then_some(cleaned))
     })
     .await
@@ -132,8 +143,8 @@ fn save_wav_temp(wav_base64: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn warm_asr() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(ensure_worker)
+async fn warm_asr(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || ensure_worker(&app))
         .await
         .map_err(|err| err.to_string())?
 }
@@ -149,7 +160,7 @@ fn worker_state() -> &'static Mutex<Option<AsrWorker>> {
     ASR_WORKER.get_or_init(|| Mutex::new(None))
 }
 
-fn ensure_worker() -> Result<(), String> {
+fn ensure_worker(app: &tauri::AppHandle) -> Result<(), String> {
     let mut guard = worker_state()
         .lock()
         .map_err(|_| "Worker lock poisoned".to_string())?;
@@ -162,16 +173,16 @@ fn ensure_worker() -> Result<(), String> {
         None => true,
     };
     if needs_start {
-        *guard = Some(start_worker()?);
+        *guard = Some(start_worker(app)?);
     }
     Ok(())
 }
 
-fn with_worker<F>(mut f: F) -> Result<String, String>
+fn with_worker<F>(app: &tauri::AppHandle, mut f: F) -> Result<String, String>
 where
     F: FnMut(&mut AsrWorker) -> Result<String, String>,
 {
-    ensure_worker()?;
+    ensure_worker(app)?;
     let mut guard = worker_state()
         .lock()
         .map_err(|_| "Worker lock poisoned".to_string())?;
@@ -182,10 +193,17 @@ where
     f(worker)
 }
 
-fn start_worker() -> Result<AsrWorker, String> {
-    let python = resolve_python().ok_or("Python interpreter not found (tried python3, python)")?;
-
-    let mut worker_cmd = Command::new(python);
+fn start_worker(app: &tauri::AppHandle) -> Result<AsrWorker, String> {
+    let mut worker_cmd =
+        if let Some(python) = std::env::var_os("VTYPE_PYTHON").or_else(project_python) {
+            Command::new(python)
+        } else if let Some(command) = runtime::bundled_python(app)? {
+            command
+        } else {
+            Command::new(
+                resolve_python().ok_or("Python interpreter not found (tried python3, python)")?,
+            )
+        };
     worker_cmd
         .arg("-c")
         .arg(include_str!("../transcribe_wav.py"))
@@ -252,23 +270,24 @@ fn send_request(worker: &mut AsrWorker, operation: u8, payload: &[u8]) -> Result
     Ok(text)
 }
 
+fn project_python() -> Option<std::ffi::OsString> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let dir = std::env::current_dir().ok()?;
+    let relative = if cfg!(windows) {
+        ".venv/Scripts/python.exe"
+    } else {
+        ".venv/bin/python"
+    };
+    std::iter::once(dir.as_path())
+        .chain(dir.parent())
+        .map(|dir| dir.join(relative))
+        .find(|python| python.is_file())
+        .map(|python| python.into_os_string())
+}
+
 fn resolve_python() -> Option<std::ffi::OsString> {
-    if let Some(python) = std::env::var_os("VTYPE_PYTHON") {
-        return Some(python);
-    }
-    if let Ok(dir) = std::env::current_dir() {
-        let relative = if cfg!(windows) {
-            ".venv/Scripts/python.exe"
-        } else {
-            ".venv/bin/python"
-        };
-        for dir in std::iter::once(dir.as_path()).chain(dir.parent()) {
-            let python = dir.join(relative);
-            if python.is_file() {
-                return Some(python.into_os_string());
-            }
-        }
-    }
     for candidate in ["python3", "python"] {
         let mut version_cmd = Command::new(candidate);
         version_cmd
@@ -297,17 +316,34 @@ fn hide_overlay(window: tauri::WebviewWindow) -> Result<(), String> {
     window.hide().map_err(|err| err.to_string())
 }
 
+#[tauri::command]
+fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("settings")
+        .ok_or("Settings window is unavailable.")?;
+    window
+        .show()
+        .and_then(|_| window.set_focus())
+        .map_err(|err| err.to_string())
+}
+
 fn trigger_hotkey(app: &tauri::AppHandle) {
     let app_handle = app.clone();
     let _ = app.run_on_main_thread(move || {
+        if let Some(window) = app_handle.get_webview_window("settings") {
+            if window.is_visible().unwrap_or(false) {
+                let _ = window.set_focus();
+                return;
+            }
+        }
         show_main_window(&app_handle);
         let _ = app_handle.emit("hotkey-pressed", ());
     });
 }
 
 #[cfg(target_os = "linux")]
-pub fn toggle(pid: u32) -> Result<(), String> {
-    hyprland::toggle(pid)
+pub fn toggle() -> Result<(), String> {
+    hyprland::toggle()
 }
 
 fn show_ready_overlay(app: &tauri::AppHandle) {
@@ -333,7 +369,6 @@ fn show_main_window(app_handle: &tauri::AppHandle) {
         }
         let _ = window.set_focusable(false);
         let _ = window.show();
-        let _ = window.set_ignore_cursor_events(true);
     }
 }
 
@@ -342,6 +377,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "settings" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             #[cfg(target_os = "linux")]
             {
@@ -373,6 +416,7 @@ pub fn run() {
             }
             let tray_menu = MenuBuilder::new(app)
                 .text(TRAY_MENU_SHOW, "Show VType")
+                .text(TRAY_MENU_SETTINGS, "Settings")
                 .separator()
                 .text(TRAY_MENU_QUIT, "Quit")
                 .build()?;
@@ -383,6 +427,9 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     TRAY_MENU_SHOW => show_ready_overlay(app),
+                    TRAY_MENU_SETTINGS => {
+                        let _ = app.emit("open-settings", ());
+                    }
                     TRAY_MENU_QUIT => app.exit(0),
                     _ => {}
                 })
@@ -401,23 +448,7 @@ pub fn run() {
             }
             let _ = tray_builder.build(app)?;
 
-            let handle = app.handle();
-            #[cfg(target_os = "linux")]
-            if hyprland::active() {
-                match hyprland::setup(handle.clone()) {
-                    Ok(()) => return Ok(()),
-                    Err(err) => eprintln!("VType Hyprland integration: {err}"),
-                }
-            }
-
-            handle
-                .global_shortcut()
-                .on_shortcut(HOTKEY, move |app, _shortcut, event| {
-                    if event.state != ShortcutState::Pressed {
-                        return;
-                    }
-                    trigger_hotkey(app);
-                })?;
+            settings::setup(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -427,7 +458,11 @@ pub fn run() {
             log_message,
             save_wav_temp,
             warm_asr,
-            hide_overlay
+            hide_overlay,
+            open_settings,
+            settings::get_settings,
+            settings::external_shortcut_command,
+            settings::save_settings
         ])
         .build(tauri::generate_context!())
         .expect("error while building VType")

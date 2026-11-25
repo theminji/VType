@@ -1,0 +1,59 @@
+body:has(.preferences) {
+  background: #24231f;
+  color: #f1ede2;
+  overflow: auto;
+  font: 14px/1.45 "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  color-scheme: dark;
+}
+
+.preferences { max-width: 600px; padding: 23px 25px 18px; margin: 0 auto; }
+.preferences h1 { margin: 0; font-size: 24px; letter-spacing: -.035em; }
+.preferences h2, .setting-title { font-size: 14px; font-weight: 650; margin: 0; }
+.preferences p, .setting-description { margin: 3px 0 0; display: block; color: #c7c0b1; font-size: 13px; }
+.preferences header { margin-bottom: 16px; }
+.preferences fieldset { padding: 0; border: 0; margin: 0; min-width: 0; }
+.preferences section { border-top: 1px solid #454137; padding: 13px 0; }
+.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.preferences button, .preferences textarea { font: inherit; }
+.preferences button {
+  background: #353129;
+  color: #f1ede2;
+  border: 1px solid #62553e;
+  padding: 7px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.preferences .shortcut { white-space: nowrap; font-size: 12px; }
+.preferences textarea {
+  width: 100%;
+  resize: vertical;
+  display: block;
+  margin-top: 7px;
+  padding: 6px 8px;
+  background: #1d1c19;
+  color: #f1ede2;
+  border: 1px solid #5c5548;
+  border-radius: 6px;
+}
+.preferences .hyprland-bind { display: block; margin-top: 10px; }
+.preferences .hyprland-bind input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 8px;
+  color: #f1ede2;
+  background: #1d1c19;
+  border: 1px solid #5c5548;
+  border-radius: 6px;
+  font: 12px/1.5 ui-monospace, monospace;
+}
+.preferences input { accent-color: #e1bd78; }
+.preferences input[type="range"] { width: 100%; margin: 8px 0; }
+.preferences input[type="checkbox"] { width: 17px; height: 17px; flex-shrink: 0; margin: 0; }
+.preferences :focus-visible { outline: 2px solid #e8c687; outline-offset: 3px; }
+.preferences .count, .preferences output { color: #dfbf82; font-variant-numeric: tabular-nums; }
+.preferences .completion { margin-top: 4px; }
+.preferences footer { border-top: 1px solid #454137; padding-top: 13px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.preferences .save { background: #dfbf82; color: #242019; font-weight: 650; white-space: nowrap; }
+.preferences button:disabled { opacity: .55; cursor: default; }
+.preferences .save-error { color: #ffbaaa; }

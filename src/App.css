@@ -19,6 +19,8 @@ body {
 }
 
 .pill {
+  pointer-events: auto;
+  cursor: pointer;
   display: grid;
   place-items: center;
   width: 88px;
@@ -33,6 +35,7 @@ body {
 }
 
 .pill[data-status="idle"] {
+  pointer-events: none;
   opacity: 0;
   transform: translateY(5px);
 }

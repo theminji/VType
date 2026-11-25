@@ -1,3 +1,4 @@
+import json
 import os
 import struct
 import sys
@@ -20,11 +21,11 @@ def load_asr_model():
     return fermion.load_speech(os.environ.get("VTYPE_MODEL_PATH") or MODEL_NAME)
 
 
-def transcribe(model, wav_bytes: bytes) -> str:
+def transcribe(model, wav_bytes: bytes, hotwords=None) -> str:
     audio = decode_wav_bytes(wav_bytes)
     if not audio.size:
         return ""
-    text, _, _ = model.transcribe_array(audio)
+    text, _, _ = model.transcribe_array(audio, hotwords=hotwords)
     return text.strip()
 
 
@@ -98,7 +99,10 @@ def run_worker() -> int:
         try:
             with redirect_stdout(sys.stderr):
                 if operation == b"T":
-                    result = transcribe(model, payload)
+                    (terms_size,) = struct.unpack_from("<I", payload)
+                    wav_offset = 4 + terms_size
+                    hotwords = json.loads(payload[4:wav_offset])
+                    result = transcribe(model, payload[wav_offset:], hotwords)
                 elif operation == b"C":
                     result = clean_transcript(payload.decode("utf-8"))
                 else:

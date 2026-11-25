@@ -14,6 +14,7 @@ export function startListeningLight(
   canvas: HTMLCanvasElement,
   getState: () => string,
   getAnalyser: () => AnalyserNode | undefined,
+  getSensitivity: () => number,
 ) {
   const canvasContext = canvas.getContext("2d");
   if (!canvasContext) return () => {};
@@ -43,7 +44,7 @@ export function startListeningLight(
     for (const sample of signal) energy += sample * sample;
     const decibels = 10 * Math.log10(energy / signal.length);
     // Display quiet speech without changing the signal sent to transcription.
-    return Math.min(1, Math.max(0, (decibels + 66) / 43));
+    return Math.min(1, Math.max(0, (decibels + 66) / 43 * getSensitivity()));
   }
 
   function tick(now: number) {
