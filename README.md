@@ -87,9 +87,9 @@ sensitivity, or hide the completion confirmation.
 
 ## Install and uninstall
 
-The **Desktop installers** workflow builds artifacts for Windows x64, macOS
-Intel and Apple silicon, and Linux x64. Download the artifact for your platform
-from the workflow run. To build packages locally, install the development
+Download the installer for your platform from **Releases**. The **Desktop
+installers** workflow builds packages for Windows x64, macOS Intel and Apple
+silicon, and Linux x64.  To build packages locally, install the development
 prerequisites and make `uv`, CMake, and Clang available on the build machine, then run
 `npm ci` and `npm run installer`. The packages are under
 `src-tauri/target/release/bundle`.

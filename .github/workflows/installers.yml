@@ -2,6 +2,10 @@ name: Desktop installers
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing tag to publish (leave blank to build artifacts only)
+        type: string
   push:
     tags: ["v*"]
 
@@ -25,6 +29,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -47,3 +53,38 @@ jobs:
             src-tauri/target/release/bundle/**/*.exe
             src-tauri/target/release/bundle/**/*.dmg
           if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push' || inputs.release_tag != ''
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ inputs.release_tag || github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vtype-*
+          path: installers
+      - name: Publish installers to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        shell: bash
+        run: |
+          mapfile -d '' assets < <(find installers -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.exe' -o -name '*.dmg' \) -print0)
+          if (( ${#assets[@]} == 0 )); then
+            echo "::error::No installers were downloaded."
+            exit 1
+          fi
+          if existing_assets=$(gh release view --json assets --jq '.assets[].name' -- "$RELEASE_TAG"); then
+            for asset in "${assets[@]}"; do
+              if ! grep -Fxq -- "${asset##*/}" <<< "$existing_assets"; then
+                gh release upload -- "$RELEASE_TAG" "$asset"
+              fi
+            done
+          else
+            gh release create --verify-tag --generate-notes --title "$RELEASE_TAG" -- "$RELEASE_TAG" "${assets[@]}"
+          fi
