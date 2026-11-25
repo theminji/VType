@@ -1,65 +1,64 @@
+import os
 import struct
 import sys
 import wave
+from contextlib import redirect_stdout
+from functools import lru_cache
 from io import BytesIO
-from pathlib import Path
-import os
-import tempfile
-import shutil
 
 import numpy as np
 
 SAMPLE_RATE = 16000
-MODEL_NAME = "nemo-parakeet-tdt-0.6b-v3"
-
-
-def app_base_path() -> Path:
-    local_appdata = os.getenv("LOCALAPPDATA")
-    if local_appdata:
-        return Path(local_appdata) / "vtype"
-    return Path(tempfile.gettempdir()) / "vtype"
-
-
-def configure_hf_cache() -> None:
-    base = app_base_path()
-    hf_home = base / "hf"
-    hf_hub_cache = hf_home / "hub"
-    xdg_cache = base / "xdg-cache"
-
-    hf_home.mkdir(parents=True, exist_ok=True)
-    hf_hub_cache.mkdir(parents=True, exist_ok=True)
-    xdg_cache.mkdir(parents=True, exist_ok=True)
-
-    # Keep caches in a trusted local app directory on Windows.
-    os.environ.setdefault("HF_HOME", str(hf_home))
-    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(hf_hub_cache))
-    os.environ.setdefault("XDG_CACHE_HOME", str(xdg_cache))
-
-
-configure_hf_cache()
-import onnx_asr
-
-
-def model_path() -> Path:
-    override = os.getenv("VTYPE_MODEL_PATH")
-    if override:
-        return Path(override)
-
-    base = app_base_path() / "models"
-    return base / MODEL_NAME
+MODEL_NAME = "FermionResearch/Phonon-2.5"
+CLEANUP_MODEL = "spokenly/cleanup-1"
+CLEANUP_CONTEXT = 4096
 
 
 def load_asr_model():
-    path = model_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        return onnx_asr.load_model(MODEL_NAME, path=path)
-    except Exception:
-        # If a partial/corrupt model directory exists, clear and retry once.
-        if path.exists():
-            shutil.rmtree(path, ignore_errors=True)
-            return onnx_asr.load_model(MODEL_NAME, path=path)
-        raise
+    import fermion
+
+    return fermion.load_speech(os.environ.get("VTYPE_MODEL_PATH") or MODEL_NAME)
+
+
+def transcribe(model, wav_bytes: bytes) -> str:
+    audio = decode_wav_bytes(wav_bytes)
+    if not audio.size:
+        return ""
+    text, _, _ = model.transcribe_array(audio)
+    return text.strip()
+
+
+@lru_cache(maxsize=1)
+def load_cleanup_model():
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(CLEANUP_MODEL)
+    model = AutoModelForCausalLM.from_pretrained(CLEANUP_MODEL).eval()
+    return tokenizer, model
+
+
+def clean_transcript(text: str) -> str:
+    import torch
+
+    tokenizer, model = load_cleanup_model()
+    prompt = f"text: {' '.join(text.split())}\nout:"
+    inputs = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
+    prompt_length = inputs.input_ids.shape[-1]
+    if prompt_length * 2 >= CLEANUP_CONTEXT:
+        return ""
+
+    with torch.inference_mode():
+        output = model.generate(
+            **inputs,
+            do_sample=False,
+            max_new_tokens=min(prompt_length + 64, CLEANUP_CONTEXT - prompt_length),
+            pad_token_id=tokenizer.eos_token_id,
+        )
+
+    generated = output[0, prompt_length:]
+    if not len(generated) or generated[-1].item() != model.generation_config.eos_token_id:
+        return ""
+    return tokenizer.decode(generated, skip_special_tokens=True).strip()
 
 
 def decode_wav_bytes(wav_bytes: bytes) -> np.ndarray:
@@ -69,43 +68,50 @@ def decode_wav_bytes(wav_bytes: bytes) -> np.ndarray:
         if wf.getframerate() != SAMPLE_RATE:
             raise ValueError(f"Input WAV must be {SAMPLE_RATE}Hz")
         pcm = wf.readframes(wf.getnframes())
-    return np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    return np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
 
 
 def run_worker() -> int:
-    model = load_asr_model()
-    sys.stdout.write("ready\n")
-    sys.stdout.flush()
-
-    buf = sys.stdin.buffer
     out = sys.stdout.buffer
+    with redirect_stdout(sys.stderr):
+        try:
+            model = load_asr_model()
+        except (Exception, SystemExit) as exc:
+            detail = " ".join(str(exc).splitlines())
+            out.write(f"ERROR: {detail}\n".encode("utf-8"))
+            out.flush()
+            return 1
 
-    while True:
+    out.write(b"ready\n")
+    out.flush()
+    buf = sys.stdin.buffer
+
+    while operation := buf.read(1):
         header = buf.read(4)
-        if not header:
+        if len(header) != 4:
             break
         length = struct.unpack("<I", header)[0]
-        if length == 0:
-            out.write(struct.pack("<I", 0))
-            out.flush()
-            continue
         payload = buf.read(length)
-        if len(payload) < length:
+        if len(payload) != length:
             break
+
         try:
-            audio = decode_wav_bytes(payload)
-            result = model.recognize(audio, sample_rate=SAMPLE_RATE)
-            if isinstance(result, list):
-                result = " ".join(str(item) for item in result)
-            text = str(result).strip().encode("utf-8")
-            out.write(struct.pack("<I", len(text)))
-            out.write(text)
-            out.flush()
+            with redirect_stdout(sys.stderr):
+                if operation == b"T":
+                    result = transcribe(model, payload)
+                elif operation == b"C":
+                    result = clean_transcript(payload.decode("utf-8"))
+                else:
+                    raise ValueError("Unknown speech worker operation")
+            status = b"\x00"
         except Exception as exc:
-            err = f"ERROR: {exc}".encode("utf-8")
-            out.write(struct.pack("<I", len(err)))
-            out.write(err)
-            out.flush()
+            status = b"\x01"
+            result = str(exc) or type(exc).__name__
+
+        text = result.encode("utf-8")
+        out.write(status + struct.pack("<I", len(text)))
+        out.write(text)
+        out.flush()
     return 0
 
 
@@ -116,9 +122,8 @@ def main() -> int:
     if not wav_bytes:
         print("Missing input wav bytes on stdin", file=sys.stderr)
         return 1
-    audio = decode_wav_bytes(wav_bytes)
-    model = load_asr_model()
-    text = model.recognize(audio, sample_rate=SAMPLE_RATE)
+    with redirect_stdout(sys.stderr):
+        text = transcribe(load_asr_model(), wav_bytes)
     print(text)
     return 0
 

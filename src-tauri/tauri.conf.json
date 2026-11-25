@@ -13,15 +13,17 @@
     "windows": [
       {
         "label": "main",
-        "title": "vtype",
-        "width": 200,
+        "title": "VType Dictation",
+        "width": 230,
         "height": 80,
         "resizable": false,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "visible": true,
+        "visible": false,
+        "focus": false,
+        "focusable": false,
         "center": false
       }
     ],

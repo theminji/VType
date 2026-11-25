@@ -3,316 +3,231 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
-type Status = "idle" | "recording" | "processing" | "error";
-
-type MicState = "unknown" | "granted" | "denied";
-
 const TARGET_SAMPLE_RATE = 16000;
+const LABELS = {
+  idle: "",
+  ready: `${navigator.platform.startsWith("Mac") ? "⌘ + ⌥" : "Ctrl + Alt"} + R to dictate`,
+  starting: "Opening microphone",
+  recording: "Listening",
+  processing: "Transcribing",
+  cleanup: "Cleaning up text",
+  done: "Pasted",
+  raw: "Pasted raw transcript",
+  empty: "No speech heard",
+  error: "",
+};
+
+type Status = keyof typeof LABELS;
 
 function App() {
   const [status, setStatus] = useState<Status>("idle");
-  const [visible, setVisible] = useState(false);
-  const [, setError] = useState<string | null>(null);
-
-  const statusRef = useRef<Status>("idle");
-  const micStateRef = useRef<MicState>("unknown");
-  const streamRef = useRef<MediaStream | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
-  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const pcmChunksRef = useRef<Float32Array[]>([]);
-  const workletUrlRef = useRef<string | null>(null);
-  const recordStartRef = useRef<number | null>(null);
-  const recordTimerRef = useRef<number | null>(null);
-  const warmStartedRef = useRef(false);
-  const lastHotkeyAtRef = useRef(0);
-  const minStopAtRef = useRef(0);
-  const hasAudioRef = useRef(false);
+  const [error, setError] = useState("");
+  const current = useRef<Status>("idle");
+  const wave = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
-    statusRef.current = status;
-  }, [status]);
+    let disposed = false;
+    let warmed = false;
+    let lastHotkey = -Infinity;
+    let stream: MediaStream | undefined;
+    let context: AudioContext | undefined;
+    let animation = 0;
+    let dismissal = 0;
+    let hide = 0;
+    let chunks: Float32Array[] = [];
 
-  useEffect(() => {
-    const unlistenPromise = listen("hotkey-pressed", () => {
-      const now = performance.now();
-      if (now - lastHotkeyAtRef.current < 250) {
-        return;
+    function update(next: Status) {
+      window.clearTimeout(dismissal);
+      window.clearTimeout(hide);
+      current.current = next;
+      setStatus(next);
+      if (next === "idle") {
+        hide = window.setTimeout(() => {
+          void invoke("hide_overlay").catch(console.warn);
+        }, 270);
       }
-      lastHotkeyAtRef.current = now;
-      setVisible(true);
-      if (!warmStartedRef.current) {
-        warmStartedRef.current = true;
-        void invoke("warm_asr");
+      if (next === "ready" || next === "done" || next === "raw" || next === "empty" || next === "error") {
+        const duration = next === "done" ? 1200 : 3500;
+        dismissal = window.setTimeout(() => update("idle"), duration);
       }
-      void toggleRecording();
-    });
+    }
 
-    return () => {
-      void unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      if (audioContextRef.current) {
-        void audioContextRef.current.close();
+    async function releaseAudio() {
+      window.cancelAnimationFrame(animation);
+      stream?.getTracks().forEach((track) => track.stop());
+      stream = undefined;
+      const activeContext = context;
+      context = undefined;
+      if (activeContext && activeContext.state !== "closed") {
+        await activeContext.close();
       }
-      if (workletUrlRef.current) {
-        URL.revokeObjectURL(workletUrlRef.current);
-      }
-      if (recordTimerRef.current) {
-        window.clearInterval(recordTimerRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    void verifyMicAccess();
-  }, []);
-
-  useEffect(() => {
-    if (status !== "idle") {
-      return;
-    }
-    if (!visible) {
-      return;
-    }
-    const timer = window.setTimeout(() => setVisible(false), 450);
-    return () => window.clearTimeout(timer);
-  }, [status, visible]);
-
-  const ensureStream = async () => {
-    // Always acquire a fresh stream to avoid stale tracks after stop.
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    streamRef.current = stream;
-    return stream;
-  };
-
-  const startRecording = async () => {
-    setError(null);
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const inputs = devices.filter((device) => device.kind === "audioinput");
-      console.log(
-        "Audio inputs:",
-        inputs.map((input) => `${input.label || "Unnamed"} (${input.deviceId})`)
-      );
-    } catch (err) {
-      console.warn("Failed to enumerate audio devices:", err);
-    }
-    const stream = await ensureStream();
-    stream.getAudioTracks().forEach((track) => {
-      track.enabled = true;
-    });
-    pcmChunksRef.current = [];
-    hasAudioRef.current = false;
-
-    const audioContext = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
-    audioContextRef.current = audioContext;
-    if (audioContext.sampleRate !== TARGET_SAMPLE_RATE) {
-      throw new Error(
-        `AudioContext sample rate is ${audioContext.sampleRate}Hz. This app requires ${TARGET_SAMPLE_RATE}Hz.`
-      );
-    }
-    if (audioContext.state !== "running") {
-      await audioContext.resume();
     }
 
-    if (!workletUrlRef.current) {
-      workletUrlRef.current = createWorkletUrl();
+    function report(message: string, detail: unknown) {
+      setError(message);
+      update("error");
+      void invoke("log_message", { message: String(detail) }).catch(console.warn);
     }
 
-    await audioContext.audioWorklet.addModule(workletUrlRef.current);
-
-    const sourceNode = audioContext.createMediaStreamSource(stream);
-    const workletNode = new AudioWorkletNode(audioContext, "pcm-capture", {
-      numberOfInputs: 1,
-      numberOfOutputs: 1,
-      channelCount: 1,
-    });
-    const gainNode = audioContext.createGain();
-    gainNode.gain.value = 0;
-
-    workletNode.port.onmessage = (event) => {
-      const data = event.data;
-      if (data instanceof Float32Array) {
-        pcmChunksRef.current.push(data);
-        hasAudioRef.current = true;
-      } else if (data instanceof ArrayBuffer) {
-        const chunk = new Float32Array(data);
-        pcmChunksRef.current.push(chunk);
-        hasAudioRef.current = true;
-      }
-    };
-
-    sourceNode.connect(workletNode);
-    workletNode.connect(gainNode);
-    gainNode.connect(audioContext.destination);
-
-    sourceNodeRef.current = sourceNode;
-    workletNodeRef.current = workletNode;
-
-    recordStartRef.current = audioContext.currentTime;
-    minStopAtRef.current = performance.now() + 350;
-    if (recordTimerRef.current) {
-      window.clearInterval(recordTimerRef.current);
-    }
-    recordTimerRef.current = window.setInterval(() => {}, 150);
-
-    setStatus("recording");
-  };
-
-  const stopRecording = () => {
-    if (statusRef.current !== "recording") {
-      return;
-    }
-    if (performance.now() < minStopAtRef.current) {
-      return;
-    }
-    if (!hasAudioRef.current) {
-      return;
-    }
-    setStatus("processing");
-    if (recordTimerRef.current) {
-      window.clearInterval(recordTimerRef.current);
-      recordTimerRef.current = null;
-    }
-    // Small delay to allow the last worklet buffers to flush.
-    window.setTimeout(() => {
-      void handleStop();
-    }, 120);
-  };
-
-  const toggleRecording = async () => {
-    const current = statusRef.current;
-    if (current === "recording") {
-      stopRecording();
-      return;
-    }
-    if (current === "processing") {
-      return;
-    }
-    try {
-      await startRecording();
-    } catch (err) {
-      const errorDetail = formatMicError(err);
-      void invoke("log_message", { message: `Mic init error: ${errorDetail}` });
-      micStateRef.current = "denied";
-      setStatus("error");
-      setError(`Microphone error: ${errorDetail}`);
-    }
-  };
-
-  const verifyMicAccess = async () => {
-    try {
-      if ("permissions" in navigator && "query" in navigator.permissions) {
-        const status = await navigator.permissions.query({
-          name: "microphone" as PermissionName,
+    async function startRecording() {
+      update("starting");
+      if (!warmed) {
+        warmed = true;
+        void invoke("warm_asr").catch((err) => {
+          warmed = false;
+          void invoke("log_message", { message: String(err) }).catch(console.warn);
         });
-        if (status.state === "granted") {
-          micStateRef.current = "granted";
-          return;
-        }
-        if (status.state === "denied") {
-          micStateRef.current = "denied";
-          return;
-        }
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((track) => track.stop());
-      micStateRef.current = "granted";
-      console.log("Mic check: getUserMedia succeeded");
-    } catch (err) {
-      const errorDetail = formatMicError(err);
-      micStateRef.current = "denied";
-      console.error("Mic check error:", errorDetail);
-      void invoke("log_message", { message: `Mic verify error: ${errorDetail}` });
-    }
-  };
-
-  const handleStop = async () => {
-    try {
-      const audioContext = audioContextRef.current;
-      const sampleRate = audioContext?.sampleRate ?? 44100;
-      const outputSampleRate = TARGET_SAMPLE_RATE;
-
-      sourceNodeRef.current?.disconnect();
-      workletNodeRef.current?.disconnect();
-      sourceNodeRef.current = null;
-      workletNodeRef.current = null;
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-      }
-
-      if (audioContext) {
-        await audioContext.close();
-        audioContextRef.current = null;
-      }
-
-      const samples = concatFloat32(pcmChunksRef.current);
-      if (!samples.length) {
-        console.warn("No audio captured.");
-        setStatus("error");
-        setError("No audio captured. Check microphone input.");
+      const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (disposed) {
+        mic.getTracks().forEach((track) => track.stop());
         return;
       }
-      console.log(
-        "Audio rates:",
-        `input=${sampleRate}Hz`,
-        `output=${outputSampleRate}Hz`,
-        `samples=${samples.length}`
-      );
-      const stats = getAudioStats(samples);
-      console.log(
-        "Audio stats:",
-        `seconds=${(samples.length / sampleRate).toFixed(2)}`,
-        `rms=${stats.rms.toFixed(4)}`,
-        `peak=${stats.peak.toFixed(4)}`
-      );
-      if (samples.length / sampleRate < 0.3) {
-        console.warn("Audio too short, transcription may be empty.");
+
+      stream = mic;
+      chunks = [];
+      const audio = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
+      context = audio;
+      if (audio.sampleRate !== TARGET_SAMPLE_RATE) {
+        throw new Error(`Unsupported microphone sample rate: ${audio.sampleRate} Hz`);
       }
-      if (stats.rms < 0.002) {
-        console.warn("Audio very quiet, transcription may be empty.");
+
+      const workletUrl = createWorkletUrl();
+      try {
+        await audio.audioWorklet.addModule(workletUrl);
+      } finally {
+        URL.revokeObjectURL(workletUrl);
       }
-      const wavBytes = await convertPcmToWav(samples, sampleRate, outputSampleRate);
-      const wavBase64 = uint8ToBase64(wavBytes);
-      const result = await invoke<string>("transcribe_wav", { wavBase64 });
-      if (result) {
-        await invoke("paste_transcription", { text: result });
-        console.log("Transcription success:", result);
-      } else {
-        console.warn("Transcription returned empty result");
+      if (disposed) return;
+      await audio.resume();
+      if (disposed) return;
+
+      const source = audio.createMediaStreamSource(mic);
+      const analyser = audio.createAnalyser();
+      const capture = new AudioWorkletNode(audio, "pcm-capture", {
+        channelCount: 1,
+        channelCountMode: "explicit",
+      });
+      const mute = audio.createGain();
+      mute.gain.value = 0;
+      capture.port.onmessage = (event: MessageEvent<Float32Array>) => chunks.push(event.data);
+
+      source.connect(analyser);
+      analyser.connect(capture);
+      capture.connect(mute);
+      mute.connect(audio.destination);
+
+      const signal = new Float32Array(analyser.fftSize);
+      let level = 0;
+      function drawMeter() {
+        analyser.getFloatTimeDomainData(signal);
+        let energy = 0;
+        for (const sample of signal) energy += sample * sample;
+        const target = Math.min(1, Math.sqrt(energy / signal.length) * 8);
+        level += (target - level) * (target > level ? 0.38 : 0.16);
+        wave.current?.style.setProperty("--level", level.toFixed(3));
+        animation = window.requestAnimationFrame(drawMeter);
       }
-      setStatus("idle");
-    } catch (err) {
-      await invoke("log_message", { message: String(err) });
-      setStatus("error");
-      setError("Transcription failed. Check the backend logs.");
+
+      update("recording");
+      drawMeter();
     }
-  };
+
+    async function stopRecording() {
+      update("processing");
+      await releaseAudio();
+      if (disposed) return;
+
+      const samples = concatFloat32(chunks);
+      chunks = [];
+      if (!samples.length) {
+        update("empty");
+        return;
+      }
+
+      const wavBase64 = uint8ToBase64(encodeWavFromFloat32(samples, TARGET_SAMPLE_RATE));
+      let text: string;
+      try {
+        text = await invoke<string>("transcribe_wav", { wavBase64 });
+      } catch (err) {
+        report(String(err).includes("Phonon worker could not start")
+          ? "Speech model unavailable" : "Transcription failed", err);
+        return;
+      }
+      if (!text) {
+        update("empty");
+        return;
+      }
+
+      update("cleanup");
+      let finalStatus: Status = "done";
+      try {
+        const cleaned = await invoke<string | null>("cleanup_transcription", { text });
+        if (cleaned === null) {
+          finalStatus = "raw";
+        } else {
+          text = cleaned;
+        }
+      } catch (err) {
+        finalStatus = "raw";
+        void invoke("log_message", { message: `Cleanup failed: ${String(err)}` }).catch(console.warn);
+      }
+
+      try {
+        await invoke("paste_transcription", { text });
+        update(finalStatus);
+      } catch (err) {
+        report("Auto-paste failed", err);
+      }
+    }
+
+    const unlisten = listen("hotkey-pressed", () => {
+      const now = performance.now();
+      if (disposed || now - lastHotkey < 250) return;
+      lastHotkey = now;
+
+      switch (current.current) {
+        case "idle":
+        case "ready":
+        case "done":
+        case "raw":
+        case "empty":
+        case "error":
+          void startRecording().catch((err) => {
+            void releaseAudio().catch(console.warn);
+            if (!disposed) report("Microphone unavailable", err);
+          });
+          break;
+        case "recording":
+          void stopRecording().catch((err) => report("Recording failed", err));
+          break;
+      }
+    });
+
+    const unlistenShow = listen("show-overlay", () => {
+      if (!disposed && (current.current === "idle" || current.current === "ready")) {
+        update("ready");
+      }
+    });
+
+    return () => {
+      disposed = true;
+      void unlisten.then((stop) => stop()).catch(console.warn);
+      void unlistenShow.then((stop) => stop()).catch(console.warn);
+      window.clearTimeout(dismissal);
+      window.clearTimeout(hide);
+      void releaseAudio().catch(console.warn);
+    };
+  }, []);
 
   return (
-    <main className={`pill-shell ${status} ${visible ? "visible" : ""}`}>
-      <div className="pill">
-        <span
-          className={`wave ${status === "recording" ? "active" : ""} ${
-            status === "processing" ? "loading" : ""
-          }`}
-        >
-          <span className="bar" />
-          <span className="bar" />
-          <span className="bar" />
-          <span className="bar" />
+    <main className="overlay" role="status" aria-live="polite" aria-atomic="true">
+      <div className="pill" data-status={status}>
+        <span className="meter" ref={wave} aria-hidden="true">
+          <i /><i /><i /><i /><i />
         </span>
+        <span className="label" key={status}>{status === "error" ? error : LABELS[status]}</span>
       </div>
     </main>
   );
@@ -345,19 +260,6 @@ function encodeWavFromFloat32(samples: Float32Array, sampleRate: number) {
   }
 
   return new Uint8Array(wavBuffer);
-}
-
-async function convertPcmToWav(
-  samples: Float32Array,
-  sampleRate: number,
-  targetSampleRate: number
-) {
-  if (sampleRate !== targetSampleRate) {
-    throw new Error(
-      `Sample rate mismatch: got ${sampleRate}Hz, expected ${targetSampleRate}Hz`
-    );
-  }
-  return encodeWavFromFloat32(samples, sampleRate);
 }
 
 function writeString(view: DataView, offset: number, value: string) {
@@ -403,31 +305,6 @@ registerProcessor('pcm-capture', PCMCaptureProcessor);
 `;
   const blob = new Blob([processorCode], { type: "application/javascript" });
   return URL.createObjectURL(blob);
-}
-
-function formatMicError(err: unknown) {
-  if (err && typeof err === "object") {
-    const name = "name" in err ? String((err as { name?: unknown }).name) : "UnknownError";
-    const message =
-      "message" in err ? String((err as { message?: unknown }).message) : String(err);
-    return `${name}: ${message}`;
-  }
-  return String(err);
-}
-
-function getAudioStats(samples: Float32Array) {
-  let peak = 0;
-  let sumSquares = 0;
-  for (let i = 0; i < samples.length; i += 1) {
-    const value = samples[i];
-    const abs = Math.abs(value);
-    if (abs > peak) {
-      peak = abs;
-    }
-    sumSquares += value * value;
-  }
-  const rms = samples.length ? Math.sqrt(sumSquares / samples.length) : 0;
-  return { rms, peak };
 }
 
 export default App;

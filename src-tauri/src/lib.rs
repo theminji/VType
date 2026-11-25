@@ -1,9 +1,11 @@
+#[cfg(target_os = "linux")]
+mod hyprland;
+
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,34 +26,47 @@ const TRAY_MENU_SHOW: &str = "tray_show";
 const TRAY_MENU_QUIT: &str = "tray_quit";
 
 #[tauri::command]
-async fn transcribe_wav(app: tauri::AppHandle, wav_base64: String) -> Result<String, String> {
-    let _ = log_message(format!("Transcribe request received, bytes(base64)={}", wav_base64.len()));
+async fn transcribe_wav(wav_base64: String) -> Result<String, String> {
+    let _ = log_message(format!(
+        "Transcribe request received, bytes(base64)={}",
+        wav_base64.len()
+    ));
     tauri::async_runtime::spawn_blocking(move || {
-        init_script_path(&app)?;
         let wav_bytes = general_purpose::STANDARD
             .decode(wav_base64)
             .map_err(|err| err.to_string())?;
 
-        let response = with_worker(|worker| send_wav(worker, &wav_bytes))?;
+        let response = with_worker(|worker| send_request(worker, b'T', &wav_bytes))?;
         let text = response.trim().to_string();
         let _ = log_message(format!("Transcribe success, chars={}", text.len()));
-    Ok(text)
+        Ok(text)
     })
     .await
     .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
-fn paste_transcription(app: tauri::AppHandle, text: String) -> Result<(), String> {
+async fn cleanup_transcription(text: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cleaned = with_worker(|worker| send_request(worker, b'C', text.as_bytes()))?;
+        Ok((!cleaned.is_empty()).then_some(cleaned))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn paste_transcription(app: tauri::AppHandle, text: String) -> Result<(), String> {
     app.clipboard()
         .write_text(text)
         .map_err(|err| err.to_string())?;
 
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.hide();
-    }
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    tauri::async_runtime::spawn_blocking(paste_into_active_app)
+        .await
+        .map_err(|err| err.to_string())?
+}
 
+fn paste_into_active_app() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         use enigo::{Key, KeyboardControllable};
@@ -84,6 +99,9 @@ fn paste_transcription(app: tauri::AppHandle, text: String) -> Result<(), String
 
 #[cfg(target_os = "linux")]
 fn linux_paste() -> Result<(), String> {
+    if hyprland::active() {
+        return hyprland::paste();
+    }
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         // Wayland: use wtype if available.
         let status = Command::new("wtype")
@@ -149,12 +167,10 @@ fn save_wav_temp(wav_base64: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn warm_asr(app: tauri::AppHandle) -> Result<(), String> {
-    std::thread::spawn(move || {
-        let _ = init_script_path(&app);
-        let _ = ensure_worker();
-    });
-    Ok(())
+async fn warm_asr() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(ensure_worker)
+        .await
+        .map_err(|err| err.to_string())?
 }
 
 struct AsrWorker {
@@ -164,29 +180,20 @@ struct AsrWorker {
 }
 
 static ASR_WORKER: OnceLock<Mutex<Option<AsrWorker>>> = OnceLock::new();
-static SCRIPT_PATH: OnceLock<PathBuf> = OnceLock::new();
-
-fn init_script_path(_app: &tauri::AppHandle) -> Result<(), String> {
-    let path = ensure_embedded_script()?;
-    let _ = SCRIPT_PATH.set(path);
-    Ok(())
-}
-
-fn script_path() -> Result<PathBuf, String> {
-    SCRIPT_PATH
-        .get()
-        .cloned()
-        .ok_or_else(|| "transcribe_wav.py not initialized".to_string())
-}
-
 fn worker_state() -> &'static Mutex<Option<AsrWorker>> {
     ASR_WORKER.get_or_init(|| Mutex::new(None))
 }
 
 fn ensure_worker() -> Result<(), String> {
-    let mut guard = worker_state().lock().map_err(|_| "Worker lock poisoned".to_string())?;
+    let mut guard = worker_state()
+        .lock()
+        .map_err(|_| "Worker lock poisoned".to_string())?;
     let needs_start = match guard.as_mut() {
-        Some(worker) => worker.child.try_wait().map_err(|err| err.to_string())?.is_some(),
+        Some(worker) => worker
+            .child
+            .try_wait()
+            .map_err(|err| err.to_string())?
+            .is_some(),
         None => true,
     };
     if needs_start {
@@ -200,7 +207,9 @@ where
     F: FnMut(&mut AsrWorker) -> Result<String, String>,
 {
     ensure_worker()?;
-    let mut guard = worker_state().lock().map_err(|_| "Worker lock poisoned".to_string())?;
+    let mut guard = worker_state()
+        .lock()
+        .map_err(|_| "Worker lock poisoned".to_string())?;
     if guard.is_none() {
         return Err("ASR worker not available".to_string());
     }
@@ -209,37 +218,30 @@ where
 }
 
 fn start_worker() -> Result<AsrWorker, String> {
-    let script_path = script_path()?;
     let python = resolve_python().ok_or("Python interpreter not found (tried python3, python)")?;
 
     let mut worker_cmd = Command::new(python);
     worker_cmd
-        .arg(script_path)
+        .arg("-c")
+        .arg(include_str!("../transcribe_wav.py"))
         .arg("--worker")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::inherit());
     configure_background_command(&mut worker_cmd);
     let mut child = worker_cmd.spawn().map_err(|err| err.to_string())?;
 
     let stdin = child.stdin.take().ok_or("Failed to open ASR stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to open ASR stdout")?;
-    let mut stderr = child.stderr.take();
     let mut reader = BufReader::new(stdout);
     let mut ready = String::new();
     reader
         .read_line(&mut ready)
         .map_err(|err| err.to_string())?;
     if ready.trim() != "ready" {
-        let mut err_buf = String::new();
-        if let Some(ref mut err) = stderr {
-            let _ = err.read_to_string(&mut err_buf);
-        }
-        return Err(format!(
-            "ASR worker not ready: {} {}",
-            ready.trim(),
-            err_buf.trim()
-        ));
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("Phonon worker could not start. {}", ready.trim()));
     }
 
     Ok(AsrWorker {
@@ -249,24 +251,28 @@ fn start_worker() -> Result<AsrWorker, String> {
     })
 }
 
-fn send_wav(worker: &mut AsrWorker, wav_bytes: &[u8]) -> Result<String, String> {
-    let len = u32::try_from(wav_bytes.len()).map_err(|_| "WAV too large".to_string())?;
+fn send_request(worker: &mut AsrWorker, operation: u8, payload: &[u8]) -> Result<String, String> {
+    let len = u32::try_from(payload.len()).map_err(|_| "Speech request too large".to_string())?;
+    worker
+        .stdin
+        .write_all(&[operation])
+        .map_err(|err| err.to_string())?;
     worker
         .stdin
         .write_all(&len.to_le_bytes())
         .map_err(|err| err.to_string())?;
     worker
         .stdin
-        .write_all(wav_bytes)
+        .write_all(payload)
         .map_err(|err| err.to_string())?;
     worker.stdin.flush().map_err(|err| err.to_string())?;
 
-    let mut header = [0u8; 4];
+    let mut header = [0u8; 5];
     worker
         .stdout
         .read_exact(&mut header)
         .map_err(|err| err.to_string())?;
-    let resp_len = u32::from_le_bytes(header) as usize;
+    let resp_len = u32::from_le_bytes([header[1], header[2], header[3], header[4]]) as usize;
     let mut buf = vec![0u8; resp_len];
     if resp_len > 0 {
         worker
@@ -275,30 +281,38 @@ fn send_wav(worker: &mut AsrWorker, wav_bytes: &[u8]) -> Result<String, String> 
             .map_err(|err| err.to_string())?;
     }
     let text = String::from_utf8_lossy(&buf).to_string();
-    if text.starts_with("ERROR:") {
+    if header[0] != 0 {
         return Err(text);
     }
     Ok(text)
 }
 
-fn ensure_embedded_script() -> Result<PathBuf, String> {
-    let path = std::env::temp_dir().join("vtype_transcribe_wav.py");
-    let script = include_str!("../transcribe_wav.py");
-    fs::write(&path, script).map_err(|err| err.to_string())?;
-    Ok(path)
-}
-
-fn resolve_python() -> Option<&'static str> {
-    let candidates = ["python3", "python"];
-    for candidate in candidates {
+fn resolve_python() -> Option<std::ffi::OsString> {
+    if let Some(python) = std::env::var_os("VTYPE_PYTHON") {
+        return Some(python);
+    }
+    if let Ok(dir) = std::env::current_dir() {
+        let relative = if cfg!(windows) {
+            ".venv/Scripts/python.exe"
+        } else {
+            ".venv/bin/python"
+        };
+        for dir in std::iter::once(dir.as_path()).chain(dir.parent()) {
+            let python = dir.join(relative);
+            if python.is_file() {
+                return Some(python.into_os_string());
+            }
+        }
+    }
+    for candidate in ["python3", "python"] {
         let mut version_cmd = Command::new(candidate);
         version_cmd
             .arg("--version")
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         configure_background_command(&mut version_cmd);
-        if version_cmd.status().is_ok() {
-            return Some(candidate);
+        if version_cmd.status().is_ok_and(|status| status.success()) {
+            return Some(candidate.into());
         }
     }
     None
@@ -312,6 +326,29 @@ fn configure_background_command(command: &mut Command) {
 
 #[cfg(not(target_os = "windows"))]
 fn configure_background_command(_command: &mut Command) {}
+
+#[tauri::command]
+fn hide_overlay(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.hide().map_err(|err| err.to_string())
+}
+
+fn trigger_hotkey(app: &tauri::AppHandle) {
+    let app_handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        show_main_window(&app_handle);
+        let _ = app_handle.emit("hotkey-pressed", ());
+    });
+}
+
+#[cfg(target_os = "linux")]
+pub fn toggle(pid: u32) -> Result<(), String> {
+    hyprland::toggle(pid)
+}
+
+fn show_ready_overlay(app: &tauri::AppHandle) {
+    show_main_window(app);
+    let _ = app.emit("show-overlay", ());
+}
 
 fn show_main_window(app_handle: &tauri::AppHandle) {
     if let Some(window) = app_handle.get_webview_window("main") {
@@ -329,8 +366,9 @@ fn show_main_window(app_handle: &tauri::AppHandle) {
                 }
             }
         }
-        let _ = window.show();
         let _ = window.set_focusable(false);
+        let _ = window.show();
+        let _ = window.set_ignore_cursor_events(true);
     }
 }
 
@@ -341,7 +379,6 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
-            let _ = init_script_path(&app.handle());
             #[cfg(target_os = "linux")]
             {
                 use webkit2gtk::{PermissionRequestExt, SettingsExt, WebViewExt};
@@ -381,7 +418,7 @@ pub fn run() {
                 .tooltip("VType")
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
-                    TRAY_MENU_SHOW => show_main_window(app),
+                    TRAY_MENU_SHOW => show_ready_overlay(app),
                     TRAY_MENU_QUIT => app.exit(0),
                     _ => {}
                 })
@@ -392,7 +429,7 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        show_main_window(tray.app_handle());
+                        show_ready_overlay(tray.app_handle());
                     }
                 });
             if let Some(icon) = app.default_window_icon().cloned() {
@@ -401,27 +438,41 @@ pub fn run() {
             let _ = tray_builder.build(app)?;
 
             let handle = app.handle();
+            #[cfg(target_os = "linux")]
+            if hyprland::active() {
+                match hyprland::setup(handle.clone()) {
+                    Ok(()) => return Ok(()),
+                    Err(err) => eprintln!("VType Hyprland integration: {err}"),
+                }
+            }
+
             handle
                 .global_shortcut()
                 .on_shortcut(HOTKEY, move |app, _shortcut, event| {
                     if event.state != ShortcutState::Pressed {
                         return;
                     }
-                    let app_handle = app.clone();
-                    let _ = app.run_on_main_thread(move || {
-                        show_main_window(&app_handle);
-                        let _ = app_handle.emit("hotkey-pressed", ());
-                    });
+                    trigger_hotkey(app);
                 })?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             transcribe_wav,
+            cleanup_transcription,
             paste_transcription,
             log_message,
             save_wav_temp,
-            warm_asr
+            warm_asr,
+            hide_overlay
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building VType")
+        .run(|_app, event| {
+            #[cfg(target_os = "linux")]
+            if matches!(event, tauri::RunEvent::Exit) {
+                hyprland::cleanup();
+            }
+            #[cfg(not(target_os = "linux"))]
+            let _ = event;
+        });
 }

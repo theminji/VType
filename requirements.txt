@@ -1,2 +1,1 @@
-numpy
-onnx-asr[cpu,hub]
+fermion-research[mlx]==0.2.15
