@@ -28,15 +28,15 @@ jobs:
             platform: macos-x64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -44,7 +44,12 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxkbcommon-dev libgtk-layer-shell-dev cmake clang libclang-dev
       - run: npm ci
       - run: npm run installer
-      - uses: actions/upload-artifact@v4
+        if: runner.os != 'macOS' || (inputs.release_tag || github.ref_name) != 'v0.1.5'
+      - name: Build macOS installers for v0.1.5
+        if: runner.os == 'macOS' && (inputs.release_tag || github.ref_name) == 'v0.1.5'
+        # The existing tag predates the deployment target fix in tauri.conf.json.
+        run: npm run installer -- --config '{"bundle":{"macOS":{"minimumSystemVersion":"11.0"}}}'
+      - uses: actions/upload-artifact@v6
         with:
           name: vtype-${{ matrix.platform }}
           path: |
@@ -63,7 +68,7 @@ jobs:
     concurrency:
       group: release-${{ inputs.release_tag || github.ref_name }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: vtype-*
           path: installers
