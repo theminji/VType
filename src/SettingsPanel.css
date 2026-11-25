@@ -1,4 +1,4 @@
-body:has(.preferences) {
+body:has(.vtype-panel) {
   background: #24231f;
   color: #f1ede2;
   overflow: auto;
@@ -57,3 +57,37 @@ body:has(.preferences) {
 .preferences .save { background: #dfbf82; color: #242019; font-weight: 650; white-space: nowrap; }
 .preferences button:disabled { opacity: .55; cursor: default; }
 .preferences .save-error { color: #ffbaaa; }
+
+.panel-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  gap: 24px;
+  padding: 0 25px;
+  background: #24231f;
+  border-bottom: 1px solid #454137;
+}
+.panel-tabs button {
+  padding: 12px 2px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #c7c0b1;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+}
+.panel-tabs button:hover, .panel-tabs button[aria-selected="true"] { color: #f1ede2; }
+.panel-tabs button[aria-selected="true"] { border-bottom-color: #dfbf82; }
+.vtype-panel :focus-visible { outline: 2px solid #e8c687; outline-offset: 2px; }
+.typing-speed { display: flex; align-items: center; gap: 6px; }
+.typing-speed input {
+  width: 65px;
+  padding: 5px 6px;
+  color: #f1ede2;
+  background: #1d1c19;
+  border: 1px solid #5c5548;
+  border-radius: 6px;
+  font: inherit;
+}

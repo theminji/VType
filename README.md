@@ -71,11 +71,17 @@ npm run tauri dev
 To use an existing unpacked Phonon-2.5 model directory, set `VTYPE_MODEL_PATH`
 before launching VType.
 
-## Settings
+## Analytics and settings
 
-Start dictation, then double-click the pill to open **VType Settings**. This
-discards the recording in progress. The tray menu also provides a Settings
-entry. Save changes to update the shortcut, turn Spokenly formatting on or
+Start dictation, then double-click the pill to open **Analytics & settings**.
+This discards the recording in progress. You can also open the panel from the tray.
+
+Analytics tracks recognized words, common English fillers, speaking pace, and
+successful insertions. The time-saved estimate compares your typing speed
+with the time spent recording, processing, and inserting text. VType stores
+daily totals locally. It does not keep transcripts for analytics.
+
+Open the **Settings** tab to adjust the typing-speed estimate. Save changes to update the shortcut, turn Spokenly formatting on or
 off, give Phonon up to 25 names or phrases to listen for, adjust the pill's
 sensitivity, or hide the completion confirmation.
 

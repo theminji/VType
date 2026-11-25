@@ -140,6 +140,7 @@ function App() {
     }
 
     async function stopRecording() {
+      const stoppedAt = performance.now();
       update("processing");
       await releaseAudio();
       if (disposed) return;
@@ -165,6 +166,7 @@ function App() {
         return;
       }
 
+      const rawText = text;
       let finalStatus: Status = "done";
       if (preferences.current.formatter) {
         update("cleanup");
@@ -183,7 +185,14 @@ function App() {
 
       update("inserting");
       try {
-        await invoke("insert_transcription", { text, target: insertTarget });
+        await invoke("insert_transcription", {
+          text, target: insertTarget,
+          dictation: {
+            rawText,
+            recordingMs: Math.round(samples.length * 1000 / TARGET_SAMPLE_RATE),
+            processingMs: Math.round(performance.now() - stoppedAt),
+          },
+        });
         update(preferences.current.showCompletion ? finalStatus : "idle");
       } catch (err) {
         report("Text insertion failed", err);
@@ -257,7 +266,7 @@ function App() {
 
   return (
     <main className="overlay" role="status" aria-live="polite" aria-atomic="true">
-      <div className="pill" data-status={status} onDoubleClick={() => openPanel.current()} title="Double-click for settings">
+      <div className="pill" data-status={status} onDoubleClick={() => openPanel.current()} title="Double-click for analytics and settings">
         <canvas
           className="listening-light"
           ref={listeningLight}

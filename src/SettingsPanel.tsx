@@ -79,9 +79,9 @@ export default function SettingsPanel() {
   const terms = new Set(hotwords.split(/\r?\n/).map((word) => word.trim()).filter(Boolean));
 
   return (
-    <main className="preferences">
+    <div className="preferences">
       <header>
-        <h1>VType Settings</h1>
+        <h1>Settings</h1>
         <p>Choose how VType listens and prepares your dictation.</p>
       </header>
       <form onSubmit={save}>
@@ -137,6 +137,20 @@ export default function SettingsPanel() {
           </section>
 
           <section>
+            <label className="setting-row">
+              <span>
+                <span className="setting-title">Typing speed</span>
+                <span className="setting-description">Used to estimate time saved in Analytics.</span>
+              </span>
+              <span className="typing-speed">
+                <input type="number" min={10} max={200} required value={settings.typingSpeedWpm || ""}
+                  onChange={(event) => update({ typingSpeedWpm: Number(event.target.value) })} />
+                <span>WPM</span>
+              </span>
+            </label>
+          </section>
+
+          <section>
             <div className="setting-row">
               <label className="setting-title" htmlFor="response">Animation sensitivity</label>
               <output htmlFor="response">{settings.meterSensitivity}%</output>
@@ -157,6 +171,6 @@ export default function SettingsPanel() {
           <button className="save" disabled={!ready || saving || terms.size > 25}>{saving ? "Saving…" : "Save changes"}</button>
         </footer>
       </form>
-    </main>
+    </div>
   );
 }

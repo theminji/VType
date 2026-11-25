@@ -1,6 +1,6 @@
 [package]
 name = "vtype"
-version = "0.1.4"
+version = "0.1.5"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -19,6 +19,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+tempfile = "3"
+unicode-segmentation = "1"
 llama-cpp-2 = { version = "=0.1.161", default-features = false }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"

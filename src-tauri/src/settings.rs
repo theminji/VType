@@ -11,6 +11,7 @@ pub struct Settings {
     pub hotkey: String,
     pub meter_sensitivity: u8,
     pub show_completion: bool,
+    pub typing_speed_wpm: u16,
 }
 
 impl Default for Settings {
@@ -21,6 +22,7 @@ impl Default for Settings {
             hotkey: super::HOTKEY.into(),
             meter_sensitivity: 100,
             show_completion: true,
+            typing_speed_wpm: 40,
         }
     }
 }
@@ -73,6 +75,7 @@ fn normalize(mut settings: Settings) -> Result<Settings, String> {
     }
     settings.hotwords = hotwords;
     settings.meter_sensitivity = settings.meter_sensitivity.clamp(50, 200);
+    settings.typing_speed_wpm = settings.typing_speed_wpm.clamp(10, 200);
     Ok(settings)
 }
 

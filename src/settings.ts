@@ -4,6 +4,7 @@ export interface Settings {
   hotkey: string;
   meterSensitivity: number;
   showCompletion: boolean;
+  typingSpeedWpm: number;
 }
 
 export const defaultSettings: Settings = {
@@ -12,4 +13,5 @@ export const defaultSettings: Settings = {
   hotkey: navigator.platform.startsWith("Mac") ? "Alt+Super+R" : "Ctrl+Alt+R",
   meterSensitivity: 100,
   showCompletion: true,
+  typingSpeedWpm: 40,
 };

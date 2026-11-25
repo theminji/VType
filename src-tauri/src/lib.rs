@@ -1,3 +1,4 @@
+mod analytics;
 mod formatter;
 #[cfg(target_os = "linux")]
 mod hypr_focus;
@@ -71,7 +72,9 @@ async fn insert_transcription(
     app: tauri::AppHandle,
     text: String,
     target: Option<serde_json::Value>,
+    dictation: Option<analytics::Dictation>,
 ) -> Result<(), String> {
+    let inserting_at = std::time::Instant::now();
     #[cfg(target_os = "linux")]
     if hyprland::active() && !app.state::<OverlayMode>().layer_shell {
         let window = app
@@ -80,7 +83,7 @@ async fn insert_transcription(
         window.hide().map_err(|err| err.to_string())?;
     }
     #[cfg(not(target_os = "linux"))]
-    let _ = (&app, &target);
+    let _ = &target;
     tauri::async_runtime::spawn_blocking(move || {
         // Typing a line break or tab can submit a command or move focus.
         let text: String = text
@@ -101,7 +104,14 @@ async fn insert_transcription(
                 hypr_focus::restore(&target)?;
             }
             Ok(())
-        })
+        })?;
+        if let Some(dictation) = dictation {
+            let insertion_ms = inserting_at.elapsed().as_millis() as u64;
+            if let Err(err) = analytics::record(&app, dictation, &text, insertion_ms) {
+                let _ = log_message(format!("Analytics write failed: {err}"));
+            }
+        }
+        Ok(())
     })
     .await
     .map_err(|err| err.to_string())?
@@ -351,10 +361,15 @@ fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("settings")
         .ok_or("Settings window is unavailable.")?;
+    let was_visible = window.is_visible().unwrap_or(false);
     window
         .show()
         .and_then(|_| window.set_focus())
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+    if !was_visible {
+        let _ = window.emit("panel-opened", ());
+    }
+    Ok(())
 }
 
 fn trigger_hotkey(app: &tauri::AppHandle) {
@@ -494,7 +509,7 @@ pub fn run() {
             }
             let tray_menu = MenuBuilder::new(app)
                 .text(TRAY_MENU_SHOW, "Show VType")
-                .text(TRAY_MENU_SETTINGS, "Settings")
+                .text(TRAY_MENU_SETTINGS, "Analytics & settings")
                 .separator()
                 .text(TRAY_MENU_QUIT, "Quit")
                 .build()?;
@@ -542,6 +557,7 @@ pub fn run() {
             warm_asr,
             hide_overlay,
             open_settings,
+            analytics::get_analytics,
             settings::get_settings,
             settings::external_shortcut_command,
             settings::save_settings,
