@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
+import { LIGHT_HEIGHT, LIGHT_WIDTH, startListeningLight } from "./listeningLight";
 
 const TARGET_SAMPLE_RATE = 16000;
 const LABELS = {
@@ -23,7 +24,7 @@ function App() {
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState("");
   const current = useRef<Status>("idle");
-  const wave = useRef<HTMLSpanElement>(null);
+  const listeningLight = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -31,7 +32,7 @@ function App() {
     let lastHotkey = -Infinity;
     let stream: MediaStream | undefined;
     let context: AudioContext | undefined;
-    let animation = 0;
+    let stopListeningLight: (() => void) | undefined;
     let dismissal = 0;
     let hide = 0;
     let chunks: Float32Array[] = [];
@@ -53,7 +54,8 @@ function App() {
     }
 
     async function releaseAudio() {
-      window.cancelAnimationFrame(animation);
+      stopListeningLight?.();
+      stopListeningLight = undefined;
       stream?.getTracks().forEach((track) => track.stop());
       stream = undefined;
       const activeContext = context;
@@ -118,20 +120,10 @@ function App() {
       capture.connect(mute);
       mute.connect(audio.destination);
 
-      const signal = new Float32Array(analyser.fftSize);
-      let level = 0;
-      function drawMeter() {
-        analyser.getFloatTimeDomainData(signal);
-        let energy = 0;
-        for (const sample of signal) energy += sample * sample;
-        const target = Math.min(1, Math.sqrt(energy / signal.length) * 8);
-        level += (target - level) * (target > level ? 0.38 : 0.16);
-        wave.current?.style.setProperty("--level", level.toFixed(3));
-        animation = window.requestAnimationFrame(drawMeter);
+      if (listeningLight.current) {
+        stopListeningLight = startListeningLight(listeningLight.current, analyser);
       }
-
       update("recording");
-      drawMeter();
     }
 
     async function stopRecording() {
@@ -224,7 +216,14 @@ function App() {
   return (
     <main className="overlay" role="status" aria-live="polite" aria-atomic="true">
       <div className="pill" data-status={status}>
-        <span className="meter" ref={wave} aria-hidden="true">
+        <canvas
+          className="listening-light"
+          ref={listeningLight}
+          width={LIGHT_WIDTH}
+          height={LIGHT_HEIGHT}
+          aria-hidden="true"
+        />
+        <span className="meter" aria-hidden="true">
           <i /><i /><i /><i /><i />
         </span>
         <span className="label" key={status}>{status === "error" ? error : LABELS[status]}</span>

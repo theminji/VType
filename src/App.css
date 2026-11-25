@@ -1,7 +1,7 @@
 :root {
   font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif;
   background: transparent;
-  color: #f0f2ff;
+  color: #f5f1e7;
 }
 
 * { box-sizing: border-box; }
@@ -21,7 +21,7 @@ body {
 }
 
 .pill {
-  --signal: #b7befe;
+  --signal: #c9b68d;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -30,9 +30,9 @@ body {
   width: min(206px, 100%);
   padding: 0 15px;
   border-radius: 999px;
-  border: 1px solid #45496a;
-  background: #24263d;
-  box-shadow: 0 4px 10px #12122550;
+  border: 1px solid #49453e;
+  background: #252421;
+  box-shadow: 0 4px 10px #15130f50;
   opacity: 1;
   transform: translateY(0) scale(1);
   transition: opacity 180ms ease, transform 260ms cubic-bezier(.2,.8,.25,1), border-color 180ms ease;
@@ -44,18 +44,18 @@ body {
 }
 
 .pill[data-status="recording"] {
-  --signal: #a9eee1;
-  border-color: #527a7d;
+  gap: 6px;
+  border-color: #675538;
 }
 
 .pill[data-status="done"],
 .pill[data-status="raw"] {
-  --signal: #a9eee1;
+  --signal: #c3c49c;
 }
 
 .pill[data-status="error"] {
-  --signal: #ffb3b9;
-  border-color: #aa667e;
+  --signal: #f4b3a5;
+  border-color: #925f54;
 }
 
 .label {
@@ -75,7 +75,6 @@ body {
 }
 
 .meter i {
-  --weight: .45;
   --delay: 0ms;
   width: 3px;
   height: 18px;
@@ -85,17 +84,24 @@ body {
   transition: background-color 180ms ease, transform 200ms ease;
 }
 
-.meter i:nth-child(2),
-.meter i:nth-child(4) { --weight: .72; }
-.meter i:nth-child(3) { --weight: 1; }
 .meter i:nth-child(2) { --delay: 80ms; }
 .meter i:nth-child(3) { --delay: 160ms; }
 .meter i:nth-child(4) { --delay: 240ms; }
 .meter i:nth-child(5) { --delay: 320ms; }
 
-[data-status="recording"] .meter i {
-  transform: scaleY(calc(.18 + var(--weight) * var(--level, 0) * .82));
-  transition-duration: 65ms;
+.listening-light {
+  display: none;
+  width: 62px;
+  height: 32px;
+  flex-shrink: 0;
+}
+
+[data-status="recording"] .listening-light {
+  display: block;
+}
+
+[data-status="recording"] .meter {
+  display: none;
 }
 
 :is([data-status="starting"], [data-status="processing"], [data-status="cleanup"]) .meter i {
@@ -115,9 +121,5 @@ body {
   *, *::before, *::after {
     animation: none !important;
     transition: none !important;
-  }
-
-  [data-status="recording"] .meter i {
-    transform: scaleY(.45);
   }
 }
