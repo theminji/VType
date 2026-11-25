@@ -35,6 +35,7 @@ function App() {
     let warmed = false;
     let lastHotkey = -Infinity;
     let captureAttempt = 0;
+    let insertTarget: unknown = null;
     let stream: MediaStream | undefined;
     let context: AudioContext | undefined;
     let analyser: AnalyserNode | undefined;
@@ -182,7 +183,7 @@ function App() {
 
       update("inserting");
       try {
-        await invoke("insert_transcription", { text });
+        await invoke("insert_transcription", { text, target: insertTarget });
         update(preferences.current.showCompletion ? finalStatus : "idle");
       } catch (err) {
         report("Text insertion failed", err);
@@ -208,7 +209,7 @@ function App() {
     }).catch(console.warn);
     const unlistenOpen = listen("open-settings", () => openPanel.current());
 
-    const unlisten = listen("hotkey-pressed", () => {
+    const unlisten = listen("hotkey-pressed", ({ payload }) => {
       const now = performance.now();
       if (disposed || now - lastHotkey < 250) return;
       lastHotkey = now;
@@ -220,6 +221,7 @@ function App() {
         case "raw":
         case "empty":
         case "error": {
+          insertTarget = payload ?? null;
           const attempt = ++captureAttempt;
           void startRecording(attempt).catch((err) => {
             if (disposed || attempt !== captureAttempt) return;

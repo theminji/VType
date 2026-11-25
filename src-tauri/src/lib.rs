@@ -1,5 +1,9 @@
+mod formatter;
+#[cfg(target_os = "linux")]
+mod hypr_focus;
 #[cfg(target_os = "linux")]
 mod hyprland;
+mod onboarding;
 mod runtime;
 mod settings;
 
@@ -57,16 +61,26 @@ async fn cleanup_transcription(
     app: tauri::AppHandle,
     text: String,
 ) -> Result<Option<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let cleaned = with_worker(&app, |worker| send_request(worker, b'C', text.as_bytes()))?;
-        Ok((!cleaned.is_empty()).then_some(cleaned))
-    })
-    .await
-    .map_err(|err| err.to_string())?
+    tauri::async_runtime::spawn_blocking(move || formatter::clean(&app, &text))
+        .await
+        .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
-async fn insert_transcription(text: String) -> Result<(), String> {
+async fn insert_transcription(
+    app: tauri::AppHandle,
+    text: String,
+    target: Option<serde_json::Value>,
+) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if hyprland::active() && !app.state::<OverlayMode>().layer_shell {
+        let window = app
+            .get_webview_window("main")
+            .ok_or("Overlay window is unavailable.")?;
+        window.hide().map_err(|err| err.to_string())?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (&app, &target);
     tauri::async_runtime::spawn_blocking(move || {
         // Typing a line break or tab can submit a command or move focus.
         let text: String = text
@@ -78,13 +92,25 @@ async fn insert_transcription(text: String) -> Result<(), String> {
                 Some(character)
             })
             .collect();
-        type_text(&text)
+        type_text(&text, || {
+            #[cfg(target_os = "linux")]
+            if hyprland::active() {
+                let target = target.ok_or("No focused app was found when dictation started.")?;
+                let target =
+                    serde_json::from_value(target).map_err(|_| "Invalid dictation target.")?;
+                hypr_focus::restore(&target)?;
+            }
+            Ok(())
+        })
     })
     .await
     .map_err(|err| err.to_string())?
 }
 
-fn type_text(text: &str) -> Result<(), String> {
+fn type_text(
+    text: &str,
+    prepare_target: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
     use enigo::{Enigo, Keyboard, Settings};
 
     let settings = Settings::default();
@@ -103,6 +129,7 @@ fn type_text(text: &str) -> Result<(), String> {
     };
 
     let mut keyboard = Enigo::new(&settings).map_err(|err| err.to_string())?;
+    prepare_target()?;
     #[cfg(target_os = "linux")]
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         // Keyboard events work in native text fields and apps such as terminals.
@@ -318,6 +345,9 @@ fn hide_overlay(window: tauri::WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
+    if onboarding::needed(&app) {
+        return onboarding::show(&app);
+    }
     let window = app
         .get_webview_window("settings")
         .ok_or("Settings window is unavailable.")?;
@@ -328,8 +358,16 @@ fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn trigger_hotkey(app: &tauri::AppHandle) {
+    #[cfg(target_os = "linux")]
+    let target = hyprland::active().then(hypr_focus::capture).flatten();
+    #[cfg(not(target_os = "linux"))]
+    let target = Option::<()>::None;
     let app_handle = app.clone();
     let _ = app.run_on_main_thread(move || {
+        if onboarding::needed(&app_handle) {
+            let _ = onboarding::show(&app_handle);
+            return;
+        }
         if let Some(window) = app_handle.get_webview_window("settings") {
             if window.is_visible().unwrap_or(false) {
                 let _ = window.set_focus();
@@ -337,7 +375,7 @@ fn trigger_hotkey(app: &tauri::AppHandle) {
             }
         }
         show_main_window(&app_handle);
-        let _ = app_handle.emit("hotkey-pressed", ());
+        let _ = app_handle.emit("hotkey-pressed", target);
     });
 }
 
@@ -347,6 +385,10 @@ pub fn toggle() -> Result<(), String> {
 }
 
 fn show_ready_overlay(app: &tauri::AppHandle) {
+    if onboarding::needed(app) {
+        let _ = onboarding::show(app);
+        return;
+    }
     show_main_window(app);
     let _ = app.emit("show-overlay", ());
 }
@@ -356,6 +398,11 @@ fn show_main_window(app_handle: &tauri::AppHandle) {
         #[cfg(target_os = "windows")]
         {
             let _ = window.set_shadow(false);
+        }
+        #[cfg(target_os = "linux")]
+        if app_handle.state::<OverlayMode>().layer_shell {
+            let _ = window.show();
+            return;
         }
         if let Ok(monitor) = window.current_monitor() {
             if let Some(monitor) = monitor {
@@ -372,14 +419,29 @@ fn show_main_window(app_handle: &tauri::AppHandle) {
     }
 }
 
+#[cfg(target_os = "linux")]
+struct OverlayMode {
+    layer_shell: bool,
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            let app_handle = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                if onboarding::needed(&app_handle) {
+                    let _ = onboarding::show(&app_handle);
+                } else {
+                    let _ = app_handle.emit("open-settings", ());
+                }
+            });
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "settings" {
+                if matches!(window.label(), "settings" | "onboarding") {
                     api.prevent_close();
                     let _ = window.hide();
                 }
@@ -391,6 +453,14 @@ pub fn run() {
                 use webkit2gtk::{PermissionRequestExt, SettingsExt, WebViewExt};
 
                 if let Some(window) = app.get_webview_window("main") {
+                    let layer_shell = match hyprland::configure_overlay(&window) {
+                        Ok(enabled) => enabled,
+                        Err(err) => {
+                            let _ = log_message(err);
+                            false
+                        }
+                    };
+                    app.manage(OverlayMode { layer_shell });
                     let _ = window.with_webview(|webview| {
                         let inner = webview.inner();
 
@@ -449,6 +519,7 @@ pub fn run() {
             let _ = tray_builder.build(app)?;
 
             settings::setup(app.handle())?;
+            onboarding::initialize(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -462,7 +533,9 @@ pub fn run() {
             open_settings,
             settings::get_settings,
             settings::external_shortcut_command,
-            settings::save_settings
+            settings::save_settings,
+            onboarding::install_components,
+            onboarding::finish_setup
         ])
         .build(tauri::generate_context!())
         .expect("error while building VType")

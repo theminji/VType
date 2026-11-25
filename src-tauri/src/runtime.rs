@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 use tauri::{path::BaseDirectory, AppHandle, Manager};
@@ -8,15 +8,19 @@ use tauri::{path::BaseDirectory, AppHandle, Manager};
 const REQUIREMENTS: &str = include_str!("../../requirements.txt");
 const PYTHON_VERSION: &str = "3.12";
 
-pub fn bundled_python(app: &AppHandle) -> Result<Option<Command>, String> {
+pub fn bundled_uv(app: &AppHandle) -> Result<Option<PathBuf>, String> {
     let executable = if cfg!(windows) { "uv.exe" } else { "uv" };
     let uv = app
         .path()
         .resolve(format!("runtime/{executable}"), BaseDirectory::Resource)
         .map_err(|err| err.to_string())?;
-    if !uv.is_file() {
+    Ok(uv.is_file().then_some(uv))
+}
+
+pub fn bundled_python(app: &AppHandle) -> Result<Option<Command>, String> {
+    let Some(uv) = bundled_uv(app)? else {
         return Ok(None);
-    }
+    };
 
     let data = app
         .path()

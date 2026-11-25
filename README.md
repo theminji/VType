@@ -12,12 +12,11 @@ Only tested on Linux and Windows for now...
 
 Linux and Windows binaries in [releases](https://github.com/theminji/VType/releases)
 
-VType runs both models locally. On the first dictation it downloads
+VType runs both models locally. The setup window for installed copies installs
 [Phonon-2.5](https://huggingface.co/FermionResearch/Phonon-2.5) (about 156 MB)
-for speech recognition and [Spokenly Cleanup 1](https://huggingface.co/spokenly/cleanup-1)
-(about 1.19 GB) to remove fillers and repetitions before typing. Later dictations
-reuse the cached models. If cleanup fails or exceeds its context budget, VType
-types the raw transcript.
+and [Spokenly Cleanup 1 Q8 GGUF](https://huggingface.co/spokenly/cleanup-1-gguf) (639 MB).
+Later dictations reuse the installed models. If cleanup fails or exceeds its
+context budget, VType types the raw transcript.
 
 Phonon recognizes 25 languages. Cleanup is trained for English, German, Spanish,
 French, Chinese, Russian, and Japanese, with the strongest results in English.
@@ -31,7 +30,7 @@ looks up through `pkg-config`.
 
 ```sh
 sudo apt update
-sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev libxkbcommon-dev
+sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev libxkbcommon-dev libgtk-layer-shell-dev cmake clang libclang-dev
 ```
 
 For other Linux build dependencies and platforms, see the
@@ -46,16 +45,13 @@ the absolute path to your built VType executable when developing locally.
 
 ```lua
 hl.bind("CTRL + ALT + R", hl.dsp.exec_cmd("vtype --toggle"))
-hl.window_rule({
-  match = { title = "^VType Dictation$" },
-  float = true, no_initial_focus = true, no_focus = true,
-  no_blur = true, no_shadow = true, no_anim = true,
-  border_size = 0, rounding = 0,
-  move = { "(monitor_w-window_w)/2", "monitor_h-window_h-24" },
-})
+-- Optional when your other layer rules enable blur.
+hl.layer_rule({ match = { namespace = "^vtype-dictation$" }, blur = false })
 ```
 
-VType never modifies or reloads the compositor configuration. Change the bind
+The pill uses a non-focusable Wayland layer on Hyprland. Dictation restores
+the window that was active when recording started and checks focus before
+typing. VType never modifies or reloads the compositor configuration. Change the bind
 in that configuration to choose a different shortcut on Hyprland. The settings
 panel generates the Lua bind for the shortcut you choose.
 
@@ -88,7 +84,7 @@ sensitivity, or hide the completion confirmation.
 The **Desktop installers** workflow builds artifacts for Windows x64, macOS
 Intel and Apple silicon, and Linux x64. Download the artifact for your platform
 from the workflow run. To build packages locally, install the development
-prerequisites and make `uv` available on the build machine, then run
+prerequisites and make `uv`, CMake, and Clang available on the build machine, then run
 `npm ci` and `npm run installer`. The packages are under
 `src-tauri/target/release/bundle`.
 
@@ -103,10 +99,11 @@ The workflow produces unsigned packages unless signing is configured on the
 build machine. Windows and macOS may flag an unsigned download. On macOS,
 VType needs Microphone and Accessibility permissions to record and type.
 
-Installed copies set up their own Python environment and download speech
-dependencies on first dictation. An internet connection is required for this
-setup and the initial model downloads. The formatter model downloads only
-when formatting is enabled and there is text to clean up.
+After installing, quit any older VType process and open VType from the app menu.
+Choose **Install models** in the setup window. VType installs its Python
+environment and both models before enabling dictation. Setup needs internet
+access, and later dictation runs locally. The native package contains the
+bootstrapper, and setup downloads the model files into your user account.
 
 Native uninstall removes the application and retains preferences and downloaded
 models. To remove those too, quit VType and delete its `com.maria.vtype`

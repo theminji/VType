@@ -35,7 +35,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxkbcommon-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxkbcommon-dev libgtk-layer-shell-dev cmake clang libclang-dev
       - run: npm ci
       - run: npm run installer
       - uses: actions/upload-artifact@v4

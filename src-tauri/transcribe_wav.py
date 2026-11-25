@@ -4,15 +4,15 @@ import struct
 import sys
 import wave
 from contextlib import redirect_stdout
-from functools import lru_cache
 from io import BytesIO
 
 import numpy as np
 
 SAMPLE_RATE = 16000
 MODEL_NAME = "FermionResearch/Phonon-2.5"
-CLEANUP_MODEL = "spokenly/cleanup-1"
-CLEANUP_CONTEXT = 4096
+CLEANUP_MODEL = "spokenly/cleanup-1-gguf"
+CLEANUP_FILE = "cleanup-1-q8_0.gguf"
+CLEANUP_REVISION = "79936c95e5c0ea9162ae7a435e64cb3127020e36"
 
 
 def load_asr_model():
@@ -29,37 +29,10 @@ def transcribe(model, wav_bytes: bytes, hotwords=None) -> str:
     return text.strip()
 
 
-@lru_cache(maxsize=1)
-def load_cleanup_model():
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+def download_cleanup_model() -> str:
+    from huggingface_hub import hf_hub_download
 
-    tokenizer = AutoTokenizer.from_pretrained(CLEANUP_MODEL)
-    model = AutoModelForCausalLM.from_pretrained(CLEANUP_MODEL).eval()
-    return tokenizer, model
-
-
-def clean_transcript(text: str) -> str:
-    import torch
-
-    tokenizer, model = load_cleanup_model()
-    prompt = f"text: {' '.join(text.split())}\nout:"
-    inputs = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
-    prompt_length = inputs.input_ids.shape[-1]
-    if prompt_length * 2 >= CLEANUP_CONTEXT:
-        return ""
-
-    with torch.inference_mode():
-        output = model.generate(
-            **inputs,
-            do_sample=False,
-            max_new_tokens=min(prompt_length + 64, CLEANUP_CONTEXT - prompt_length),
-            pad_token_id=tokenizer.eos_token_id,
-        )
-
-    generated = output[0, prompt_length:]
-    if not len(generated) or generated[-1].item() != model.generation_config.eos_token_id:
-        return ""
-    return tokenizer.decode(generated, skip_special_tokens=True).strip()
+    return hf_hub_download(CLEANUP_MODEL, CLEANUP_FILE, revision=CLEANUP_REVISION)
 
 
 def decode_wav_bytes(wav_bytes: bytes) -> np.ndarray:
@@ -103,8 +76,8 @@ def run_worker() -> int:
                     wav_offset = 4 + terms_size
                     hotwords = json.loads(payload[4:wav_offset])
                     result = transcribe(model, payload[wav_offset:], hotwords)
-                elif operation == b"C":
-                    result = clean_transcript(payload.decode("utf-8"))
+                elif operation == b"F":
+                    result = download_cleanup_model()
                 else:
                     raise ValueError("Unknown speech worker operation")
             status = b"\x00"
