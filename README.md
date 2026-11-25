@@ -88,8 +88,8 @@ sensitivity, or hide the completion confirmation.
 ## Install and uninstall
 
 Download the installer for your platform from **Releases**. The **Desktop
-installers** workflow builds packages for Windows x64, macOS Intel and Apple
-silicon, and Linux x64.  To build packages locally, install the development
+installers** workflow publishes Windows x64 and Linux x64 packages.
+To build packages locally, install the development
 prerequisites and make `uv`, CMake, and Clang available on the build machine, then run
 `npm ci` and `npm run installer`. The packages are under
 `src-tauri/target/release/bundle`.
@@ -97,13 +97,11 @@ prerequisites and make `uv`, CMake, and Clang available on the build machine, th
 | Platform | Install | Uninstall |
 | --- | --- | --- |
 | Windows | Run the NSIS setup executable. | Choose VType in **Settings → Apps → Installed apps → Uninstall**. |
-| macOS | Open the DMG and drag VType to Applications. | Quit VType and move it from Applications to Trash. |
 | Debian / Ubuntu | Run `sudo apt install ./vtype_<version>_amd64.deb`. | Run `sudo apt remove vtype`. |
 | Fedora | Run `sudo dnf install ./vtype-<version>-1.x86_64.rpm`. | Run `sudo dnf remove vtype`. |
 
 The workflow produces unsigned packages unless signing is configured on the
-build machine. Windows and macOS may flag an unsigned download. On macOS,
-VType needs Microphone and Accessibility permissions to record and type.
+build machine. Windows may flag an unsigned download.
 
 After installing, quit any older VType process and open VType from the app menu.
 Choose **Install models** in the setup window. VType installs its Python
