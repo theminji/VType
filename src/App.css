@@ -38,6 +38,11 @@ body {
 }
 
 .pill[data-status="recording"] { border-color: #827049; }
+
+.pill:is([data-status="processing"], [data-status="cleanup"], [data-status="inserting"]) {
+  border-color: #b7a98d;
+  box-shadow: inset 0 0 0 2px #393631, 0 4px 10px #15130f50;
+}
 .pill[data-status="done"], .pill[data-status="raw"] { border-color: #7c805a; }
 .pill[data-status="error"], .pill[data-status="empty"] { border-color: #a56854; }
 

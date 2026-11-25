@@ -32,6 +32,7 @@ export function startListeningLight(
   let time = 0;
   let level = 0;
   let speed = 0.7;
+  let processing = 0;
 
   function readVoice() {
     const analyser = getAnalyser();
@@ -53,10 +54,11 @@ export function startListeningLight(
     const target = state === "recording" ? readVoice() : working ? 0.29 : 0.1;
     const response = target > level ? 0.034 : 0.23;
     level += (target - level) * (1 - Math.exp(-dt / response));
-    const targetSpeed = working ? 1.25 : 0.63 + 0.85 * level;
+    processing += ((working ? 1 : 0) - processing) * (1 - Math.exp(-dt / 0.13));
+    const targetSpeed = working ? 1.7 : 0.63 + 0.85 * level;
     speed += (targetSpeed - speed) * (1 - Math.exp(-dt / 0.14));
     time += dt * speed;
-    paintLight(context, time, level);
+    paintLight(context, time, level, processing);
     frame = window.requestAnimationFrame(tick);
   }
 
@@ -64,9 +66,9 @@ export function startListeningLight(
     window.cancelAnimationFrame(frame);
     lastFrame = undefined;
     if (preference.matches) {
-      paintLight(context, 1.6, 0.18);
+      paintLight(context, 1.6, 0.18, 0);
     } else {
-      paintLight(context, time, level);
+      paintLight(context, time, level, processing);
       frame = window.requestAnimationFrame(tick);
     }
   }
@@ -79,11 +81,23 @@ export function startListeningLight(
   };
 }
 
-function paintLight(context: CanvasRenderingContext2D, time: number, level: number) {
+function paintLight(
+  context: CanvasRenderingContext2D,
+  time: number,
+  level: number,
+  processing: number,
+) {
   const centerX = LIGHT_WIDTH / 2;
   const centerY = LIGHT_HEIGHT / 2;
   context.clearRect(0, 0, LIGHT_WIDTH, LIGHT_HEIGHT);
   context.globalCompositeOperation = "lighter";
+
+  // Sweep a shared band of light across the contours while work is in progress.
+  const sweepX = centerX + 19 * Math.sin(time * 2.65);
+  const sweep = context.createLinearGradient(sweepX - 12, 0, sweepX + 12, 0);
+  sweep.addColorStop(0, "#f5ead200");
+  sweep.addColorStop(0.5, "#f5ead2");
+  sweep.addColorStop(1, "#f5ead200");
 
   for (const contour of CONTOURS) {
     const { phase, rate, offset, tilt, width, opacity } = contour;
@@ -129,5 +143,12 @@ function paintLight(context: CanvasRenderingContext2D, time: number, level: numb
     context.lineWidth = width + 0.27 * level;
     context.globalAlpha = opacity * (0.82 + 0.31 * level);
     context.stroke();
+
+    if (processing > 0.01) {
+      context.strokeStyle = sweep;
+      context.lineWidth = width + 0.72;
+      context.globalAlpha = opacity * processing * 0.88;
+      context.stroke();
+    }
   }
 }

@@ -73,41 +73,35 @@ async fn insert_transcription(text: String) -> Result<(), String> {
     .map_err(|err| err.to_string())?
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn type_text(text: &str) -> Result<(), String> {
-    use enigo::{Enigo, KeyboardControllable};
-    Enigo::new().key_sequence(text);
-    Ok(())
-}
+    use enigo::{Enigo, Keyboard, Settings};
 
-#[cfg(target_os = "linux")]
-fn type_text(text: &str) -> Result<(), String> {
-    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
-    let program = if wayland { "wtype" } else { "xdotool" };
-    let mut command = Command::new(program);
-    if wayland {
-        command.args(["-d", "2", "-"]);
+    let settings = Settings::default();
+    #[cfg(target_os = "linux")]
+    let settings = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        // Enigo sends to every connected backend. Use only Wayland in Wayland sessions.
+        Settings {
+            x11_display: Some(String::new()),
+            ..settings
+        }
     } else {
-        command.args(["type", "--clearmodifiers", "--file", "-"]);
+        Settings {
+            wayland_display: Some("/dev/null".into()),
+            ..settings
+        }
+    };
+
+    let mut keyboard = Enigo::new(&settings).map_err(|err| err.to_string())?;
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        // Keyboard events work in native text fields and apps such as terminals.
+        use enigo::{Direction, Key};
+        return text
+            .chars()
+            .try_for_each(|character| keyboard.key(Key::Unicode(character), Direction::Click))
+            .map_err(|err| err.to_string());
     }
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("Could not run {program}: {err}"))?;
-    let write_result = child
-        .stdin
-        .take()
-        .expect("typing process has piped stdin")
-        .write_all(text.as_bytes());
-    let output = child.wait_with_output().map_err(|err| err.to_string())?;
-    if !output.status.success() {
-        return Err(format!(
-            "{program} could not type: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    write_result.map_err(|err| format!("Could not send text to {program}: {err}"))
+    keyboard.text(text).map_err(|err| err.to_string())
 }
 
 #[tauri::command]

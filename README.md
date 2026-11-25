@@ -44,11 +44,10 @@ On Hyprland 0.55 and newer, VType registers Ctrl+Alt+R through Hyprland.
 Restart VType after reloading your Hyprland config to restore the shortcut
 and overlay rule.
 
-Direct typing on Linux requires `wtype` on Hyprland and other Wayland
-compositors that support the virtual-keyboard protocol, or `xdotool` on X11.
-On Ubuntu or Pop!_OS, install the relevant package with `sudo apt install wtype`
-or `sudo apt install xdotool`. VType types line breaks and tabs as spaces
-to avoid submitting text or changing focus.
+VType ships with direct typing for Windows, macOS, Linux/X11, and Wayland
+compositors that expose the virtual-keyboard protocol, including Hyprland.
+macOS may require Accessibility permission. VType types line breaks and tabs
+as spaces to avoid submitting text or changing focus.
 
 ```sh
 python -m venv .venv
